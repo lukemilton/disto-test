@@ -45,7 +45,7 @@ textarea{width:100%;height:120px;font-family:Consolas,monospace;font-size:12.5px
 <body>
 <div class="wrap">
   <div>
-    <h1>DISTO X3 Test <span class="muted">version 6.5 (phone app, camera, remote control)</span></h1>
+    <h1>DISTO X3 Test <span class="muted">version 6.6 (phone app, camera, remote control)</span></h1>
     <p class="muted">Connects to the Leica DISTO over Bluetooth, records readings and works out the spread. Open this page in Google Chrome on an Android phone, or in Chrome or Edge on a computer with Bluetooth. iPhones cannot use it (use the Leica DISTO Plan app instead).</p>
   </div>
 
@@ -709,6 +709,8 @@ if(upKeyGet()) upShow("Set up. Results are sent for Claude automatically.");
 
 // ---- Remote control: Claude leaves instructions in the private store; the app carries them out and replies ----
 let remoteTimer=null, remoteBusy=false, remoteFastUntil=0, remoteLast=0;
+// Two copies of this app can run at once (phone and laptop). Each instruction can be addressed to one of them.
+const MYNAME = /Android|iPhone|iPad/.test(navigator.userAgent) ? "phone" : "laptop";
 const remoteSeen = () => { try{ return localStorage.getItem("x3cmd")||""; }catch(e){ return ""; } };
 async function ghGet(path){
   const r = await fetch("https://api.github.com/repos/"+GH_REPO+"/contents/"+path+"?t="+Date.now(), {headers:{Authorization:"Bearer "+upKeyGet(), Accept:"application/vnd.github.raw+json"}, cache:"no-store"});
@@ -717,7 +719,7 @@ async function ghGet(path){
 }
 function statusObj(){
   const s=stats(kept(readings)), cs=camTrack?camTrack.getSettings():{}, caps=(camTrack&&camTrack.getCapabilities)?camTrack.getCapabilities():{};
-  return { app:document.querySelector("h1").textContent.trim().replace(/\s+/g," "), time:new Date().toString(), connected:!!(device&&device.gatt.connected&&cmdChar), x3:device&&device.name||null,
+  return { device:MYNAME, app:document.querySelector("h1").textContent.trim().replace(/\s+/g," "), time:new Date().toString(), connected:!!(device&&device.gatt.connected&&cmdChar), x3:device&&device.name||null,
     camera:!!camStream, cam:{w:cs.width,h:cs.height,zoom:cs.zoom,brightness:cs.exposureCompensation,zoomRange:caps.zoom?[caps.zoom.min,caps.zoom.max]:null,brightnessRange:caps.exposureCompensation?[caps.exposureCompensation.min,caps.exposureCompensation.max]:null},
     cameraDetails:camInfo(), phone:phoneCache, testRunning:running, readings:readings.length, last:readings.length?readings[readings.length-1]:null, tiltDeg:lastTilt===null?null:lastTilt*180/Math.PI,
     stats:s, tape:$("tape").value, target:$("surface").value, conditions:$("cond").value, trim:$("trim").value, savedSets:sets.length, waitingToSend:upQueue.length, screen:[innerWidth,innerHeight], visible:document.visibilityState };
@@ -794,18 +796,19 @@ async function remoteTick(){
   remoteBusy=true; remoteLast=Date.now();
   try{
     const txt=await ghGet("control/command.json");
-    $("remoteStatus").textContent="Remote control: on. Last checked "+new Date().toLocaleTimeString()+".";
+    $("remoteStatus").textContent="Remote control: on (this is the "+MYNAME+"). Last checked "+new Date().toLocaleTimeString()+".";
     if(txt){
       let cmd=null; try{ cmd=JSON.parse(txt); }catch(e){}
       if(cmd && cmd.id && cmd.id!==remoteSeen()){
         try{ localStorage.setItem("x3cmd",cmd.id); }catch(e){}
-        if(cmd.expires && Date.now()>Date.parse(cmd.expires)){ log("Remote control: ignored an old instruction ("+cmd.id+")."); }
+        if(cmd.to && cmd.to!==MYNAME){ /* for the other device */ }
+        else if(cmd.expires && Date.now()>Date.parse(cmd.expires)){ log("Remote control: ignored an old instruction ("+cmd.id+")."); }
         else{
           log("Remote control: carrying out "+cmd.id+" ("+(cmd.cmds||[]).map(c=>c.do).join(", ")+").");
           const files=[], results=[];
           for(const [i,c] of (cmd.cmds||[]).entries()){ let r; try{ r=await remoteDo(c, files, String(i+1).padStart(2,"0")); }catch(e){ r="failed: "+e.message; } results.push({do:c.do, result:r, rows:c._rows}); }
           const enc=new TextEncoder();
-          files.push({name:"reply.json", data:enc.encode(JSON.stringify({id:cmd.id, results, status:statusObj(), logTail:$("log").textContent.split("\n").slice(-40)},null,1))});
+          files.push({name:"reply.json", data:enc.encode(JSON.stringify({id:cmd.id, from:MYNAME, results, status:statusObj(), logTail:$("log").textContent.split("\n").slice(-40)},null,1))});
           uploadAll("control/replies/"+cmd.id, files);
           remoteFastUntil=Date.now()+240000;
           log("Remote control: done, reply sent.");
