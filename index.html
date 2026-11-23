@@ -45,7 +45,7 @@ textarea{width:100%;height:120px;font-family:Consolas,monospace;font-size:12.5px
 <body>
 <div class="wrap">
   <div>
-    <h1>DISTO X3 Test <span class="muted">version 6.3 (phone app, camera, remote control)</span></h1>
+    <h1>DISTO X3 Test <span class="muted">version 6.4 (phone app, camera, remote control)</span></h1>
     <p class="muted">Connects to the Leica DISTO over Bluetooth, records readings and works out the spread. Open this page in Google Chrome on an Android phone, or in Chrome or Edge on a computer with Bluetooth. iPhones cannot use it (use the Leica DISTO Plan app instead).</p>
   </div>
 
@@ -205,7 +205,9 @@ const CMD_X = "3ab10120-f831-4395-b29d-570977d5bf94"; // X3/X4: command channel
 
 const $ = id => document.getElementById(id);
 let trigCmd = "g", finding = false, lastReadingAt = 0, lastOtherAt = 0, lastTilt = null;
-let sessionRows = [], autoPhotos = [];
+let sessionRows = [], autoPhotos = [], laserLitAt = 0;
+// Wait for the moment the laser dot is switched on, so photos catch it. Gives up after maxMs.
+async function waitLaser(maxMs){ const t0=Date.now(); while(Date.now()-t0<maxMs){ const a=Date.now()-laserLitAt; if(a>350 && a<1100) return true; await sleep(40); } return false; }
 // ---- Phone sensors: which way the phone is leaning, how much it is shaking, light level, battery, position ----
 let sens={alpha:null,beta:null,gamma:null,ax:null,ay:null,az:null,lux:null}, vibSum=0, vibN=0, lastSnap=["","","","",""], phoneCache={}, geo=null;
 window.addEventListener("deviceorientation", e=>{ sens.alpha=e.alpha; sens.beta=e.beta; sens.gamma=e.gamma; });
@@ -346,6 +348,7 @@ async function shoot(){
   // X3/X4: "raiseEvent 10" acts like the red button: first press switches the laser on, the next one measures.
   const before=readings.length;
   if(!(await send(tc()))) return false;
+  laserLitAt = Date.now();   // on the X3 the first press switches the laser on; it stays on until the measuring press
   await sleep(1500);
   if(readings.length===before && isX()){ await send(tc()); await sleep(2500); }
   else if(readings.length===before) await sleep(2500);
@@ -578,7 +581,8 @@ $("runTest").onclick = async()=>{
     for(const lv of levels){
       if(stopRun) break;
       if(lv!==null){ try{ await camTrack.applyConstraints({advanced:[{exposureMode:"continuous",exposureCompensation:lv}]}); }catch(e){} await sleep(900); }
-      const b=await frameBlob("t+"+sec+"s"+(lv!==null?"  brightness "+lv.toFixed(1):""));
+      const lit=await waitLaser(9000);
+      const b=await frameBlob("t+"+sec+"s"+(lv!==null?"  brightness "+lv.toFixed(1):"")+(lit?"  laser ON":"  laser off"));
       if(b) files.push({name:"photo_"+String(sec).padStart(3,"0")+"s"+(lv!==null?"_b"+lv.toFixed(1):"")+".jpg", data:new Uint8Array(await b.arrayBuffer())});
     }
     if(hasExp){ try{ await camTrack.applyConstraints({advanced:[{exposureMode:"continuous",exposureCompensation:cur}]}); }catch(e){} }
@@ -679,7 +683,8 @@ async function autoShot(label){
   try{
     if(!camStream){ await $("camOn").onclick(); await sleep(1500); }
     if(!camStream) return;
-    const b=await frameBlob(label); if(b) autoPhotos.push({name:"photo_"+label+".jpg", data:new Uint8Array(await b.arrayBuffer())});
+    const lit = label==="start" ? await waitLaser(9000) : false;
+    const b=await frameBlob(label+(lit?"  laser ON":"")); if(b) autoPhotos.push({name:"photo_"+label+".jpg", data:new Uint8Array(await b.arrayBuffer())});
   }catch(e){}
 }
 function uploadLog(kind){
