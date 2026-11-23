@@ -45,7 +45,7 @@ textarea{width:100%;height:120px;font-family:Consolas,monospace;font-size:12.5px
 <body>
 <div class="wrap">
   <div>
-    <h1>DISTO X3 Test <span class="muted">version 5.8 (phone app with camera)</span></h1>
+    <h1>DISTO X3 Test <span class="muted">version 5.9 (phone app with camera)</span></h1>
     <p class="muted">Connects to the Leica DISTO over Bluetooth, records readings and works out the spread. Open this page in Google Chrome on an Android phone, or in Chrome or Edge on a computer with Bluetooth. iPhones cannot use it (use the Leica DISTO Plan app instead).</p>
   </div>
 
@@ -117,7 +117,7 @@ textarea{width:100%;height:120px;font-family:Consolas,monospace;font-size:12.5px
 
   <div class="card">
     <h2>5-minute test</h2>
-    <p class="muted">Connect the DISTO first, aim it at the post, then press the button and step away. For 5 minutes it takes a reading about every 2 to 4 seconds, a set of photos every 30 seconds (at three brightness levels if the phone allows) and a 30 second video at the start. At the end everything is saved as ONE zip file in Downloads, to send to Claude. Fill in the tape distance, target and conditions in section 3 before starting.</p>
+    <p class="muted">Connect the DISTO first, aim it at the post, then press the button and step away. For 5 minutes it takes a reading about every 2 to 4 seconds, a set of photos every 30 seconds (at three brightness levels if the phone allows) and a 30 second video at the start. It beeps once when it starts and five times when it is done (turn the media volume up). At the end everything is saved as ONE zip file in Downloads, to send to Claude. Fill in the tape distance, target and conditions in section 3 before starting.</p>
     <div class="row">
       <button class="primary" id="runTest">Run 5-minute test</button>
       <button id="shareRun">Send numbers and log to Claude</button>
@@ -485,12 +485,25 @@ function frameBlob(extra){
     c.toBlob(b=>res(b),"image/jpeg",0.9);
   });
 }
-let running=false, stopRun=false, lastRun=null;
+let running=false, stopRun=false, lastRun=null, audioCtx=null;
+// Beeps: the sound has to be switched on from a button tap, so it is set up when the test starts.
+function beepInit(){ try{ audioCtx = audioCtx || new (window.AudioContext||window.webkitAudioContext)(); audioCtx.resume(); }catch(e){} }
+function beep(times){
+  try{ if(navigator.vibrate) navigator.vibrate(Array(times*2-1).fill(0).map((_,i)=>i%2?150:350)); }catch(e){}
+  if(!audioCtx) return;
+  try{
+    for(let i=0;i<times;i++){
+      const t=audioCtx.currentTime+i*0.6, o=audioCtx.createOscillator(), g=audioCtx.createGain();
+      o.type="square"; o.frequency.value=1760; g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(0.9,t+0.02); g.gain.setValueAtTime(0.9,t+0.33); g.gain.exponentialRampToValueAtTime(0.0001,t+0.4);
+      o.connect(g); g.connect(audioCtx.destination); o.start(t); o.stop(t+0.42);
+    }
+  }catch(e){}
+}
 $("runTest").onclick = async()=>{
   if(running){ stopRun=true; $("runStatus").textContent="Stopping and saving..."; return; }
   if(!cmdChar || !device || !device.gatt.connected){ log("5-minute test: connect to the DISTO first."); $("runStatus").textContent="Connect to the DISTO first."; return; }
   if(!camStream){ try{ await $("camOn").onclick(); }catch(e){} }
-  running=true; stopRun=false; $("runTest").textContent="Stop test early (still saves)";
+  running=true; stopRun=false; $("runTest").textContent="Stop test early (still saves)"; beepInit(); beep(1);
   const DUR=300000, T0=Date.now(), name="x3_5min_"+stamp(), files=[], rows=[], notes=[];
   readings=[]; render();
   log("5-MINUTE TEST STARTED. Keep clear of the beam. Camera: "+(camStream?"on":"NOT on (readings only)")+".");
@@ -557,7 +570,7 @@ $("runTest").onclick = async()=>{
   if(s){ sets.push({...s, surface:$("surface").value+" (5-min test)", cond:$("cond").value, tape:isNaN(tape)?null:tape, off:isNaN(tape)?null:s.avg-tape}); renderSets(); }
   for(const l of lines) log(l);
   log("5-MINUTE TEST DONE. One file saved: "+name+".zip. Send it to Claude.");
-  $("runStatus").textContent="Done. Saved "+name+".zip in Downloads."; $("runTest").textContent="Run 5-minute test"; running=false;
+  beep(5); $("runStatus").textContent="Done. Saved "+name+".zip in Downloads."; $("runTest").textContent="Run 5-minute test"; running=false;
 };
 
 // Send the results out through the phone's Share menu (to the Claude app or Google Drive).
