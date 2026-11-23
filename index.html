@@ -37,13 +37,15 @@ th:first-child,td:first-child,th:nth-child(2),td:nth-child(2){text-align:left}
 .tablewrap{overflow-x:auto}
 #log{background:#10181d;color:#cfe3ee;font-family:Consolas,monospace;font-size:12.5px;padding:10px;border-radius:5px;height:320px;overflow:auto;white-space:pre-wrap}
 textarea{width:100%;height:120px;font-family:Consolas,monospace;font-size:12.5px}
+#camView{width:100%;max-height:70vh;background:#000;border-radius:5px;margin-top:8px}
+#camFiles a{display:block;margin-top:4px}
 @media (max-width:700px){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
 </style>
 </head>
 <body>
 <div class="wrap">
   <div>
-    <h1>DISTO X3 Test <span class="muted">version 5.2 (phone app)</span></h1>
+    <h1>DISTO X3 Test <span class="muted">version 5.3 (phone app with camera)</span></h1>
     <p class="muted">Connects to the Leica DISTO over Bluetooth, records readings and works out the spread. Open this page in Google Chrome on an Android phone, or in Chrome or Edge on a computer with Bluetooth. iPhones cannot use it (use the Leica DISTO Plan app instead).</p>
   </div>
 
@@ -93,6 +95,24 @@ textarea{width:100%;height:120px;font-family:Consolas,monospace;font-size:12.5px
       <div class="stat"><div class="k">Typical scatter</div><div class="v" id="s-sd">–</div></div>
       <div class="stat" id="box-off"><div class="k">Average minus tape</div><div class="v" id="s-off">–</div></div>
     </div>
+  </div>
+
+  <div class="card">
+    <h2>Camera (films while the readings run)</h2>
+    <p class="muted">Uses the phone's back camera. Photos and videos are saved to the phone's Downloads folder. Keep each video under about 2 minutes.</p>
+    <div class="row">
+      <button class="primary" id="camOn">Turn camera on</button>
+      <button id="camPhoto" disabled>Take photo</button>
+      <button id="camRec" disabled>Start recording</button>
+      <button id="camOff" disabled>Turn camera off</button>
+      <span class="status" id="camStatus"></span>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <label id="zoomWrap" style="display:none">Zoom <input type="range" id="camZoom" style="width:180px"> <span id="zoomVal"></span></label>
+      <label id="expWrap" style="display:none">Brightness <input type="range" id="camExp" style="width:180px"> <span id="expVal"></span></label>
+    </div>
+    <video id="camView" playsinline muted autoplay style="display:none"></video>
+    <div id="camFiles" class="muted"></div>
   </div>
 
   <div class="card">
@@ -334,6 +354,70 @@ $("copyLog").onclick = async()=>{
   catch(e){ $("logCopied").textContent="Could not copy. Select the text in the box and press Ctrl+C."; }
 };
 render();
+// ---- Camera: live view, photos and video from the back camera, while Bluetooth readings carry on ----
+let camStream=null, camTrack=null, rec=null, recChunks=[], recMime="", wake=null;
+const stamp = () => { const d=new Date(), p=n=>String(n).padStart(2,"0"); return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate())+"_"+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds()); };
+function saveFile(blob, name){
+  const url = URL.createObjectURL(blob), a = document.createElement("a");
+  a.href = url; a.download = name; a.textContent = "Saved: "+name+" (tap to save again)";
+  $("camFiles").appendChild(a);
+  const b = document.createElement("a"); b.href = url; b.download = name; document.body.appendChild(b); b.click(); b.remove();
+  log("Saved "+name+" ("+(blob.size/1e6).toFixed(1)+" MB) to Downloads.");
+}
+async function keepAwake(){ try{ if("wakeLock" in navigator && camStream) wake = await navigator.wakeLock.request("screen"); }catch(e){} }
+document.addEventListener("visibilitychange", ()=>{ if(document.visibilityState==="visible") keepAwake(); });
+function camButtons(on){ $("camOn").disabled=on; for(const id of ["camPhoto","camRec","camOff"]) $(id).disabled=!on; $("camView").style.display=on?"block":"none"; if(!on){ $("zoomWrap").style.display="none"; $("expWrap").style.display="none"; } }
+function slider(wrapId, inputId, valId, cap, key, extra){
+  if(!cap || cap.max===undefined || cap.max<=cap.min) return;
+  const el=$(inputId); el.min=cap.min; el.max=cap.max; el.step=cap.step||0.1;
+  const s=camTrack.getSettings(); el.value = s[key]!==undefined ? s[key] : cap.min; $(valId).textContent = (+el.value).toFixed(1);
+  $(wrapId).style.display="";
+  el.oninput = async()=>{ $(valId).textContent=(+el.value).toFixed(1); try{ await camTrack.applyConstraints({advanced:[Object.assign({[key]:+el.value}, extra||{})]}); }catch(e){ log("Camera would not change "+key+": "+e.message); } };
+}
+$("camOn").onclick = async()=>{
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){ log("This browser cannot use the camera."); return; }
+  try{
+    camStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"}, width:{ideal:1920}, height:{ideal:1080}}, audio:false});
+    camTrack = camStream.getVideoTracks()[0];
+    $("camView").srcObject = camStream; camButtons(true);
+    const caps = camTrack.getCapabilities ? camTrack.getCapabilities() : {};
+    slider("zoomWrap","camZoom","zoomVal",caps.zoom,"zoom");
+    slider("expWrap","camExp","expVal",caps.exposureCompensation,"exposureCompensation",{exposureMode:"continuous"});
+    const s=camTrack.getSettings(); log("Camera on: "+(s.width||"?")+" x "+(s.height||"?")+". Zoom slider: "+(caps.zoom?"yes":"not offered by this phone")+". Brightness slider: "+(caps.exposureCompensation?"yes":"not offered by this phone")+".");
+    keepAwake();
+  }catch(e){ log("Could not start the camera: "+e.message+". Allow the camera when the phone asks."); }
+};
+function camStop(){
+  if(rec && rec.state!=="inactive") rec.stop();
+  if(camStream) camStream.getTracks().forEach(t=>t.stop());
+  camStream=null; camTrack=null; $("camView").srcObject=null; camButtons(false); $("camStatus").textContent="";
+  if(wake){ try{ wake.release(); }catch(e){} wake=null; }
+}
+$("camOff").onclick = ()=>{ camStop(); log("Camera off."); };
+$("camPhoto").onclick = ()=>{
+  const v=$("camView"); if(!v.videoWidth){ log("Camera picture not ready yet."); return; }
+  const c=document.createElement("canvas"); c.width=v.videoWidth; c.height=v.videoHeight;
+  const g=c.getContext("2d"); g.drawImage(v,0,0);
+  const fs=Math.max(18,Math.round(c.height/30)), tape=$("tape").value;
+  const txt=new Date().toLocaleString()+"   X3: "+(readings.length?readings[readings.length-1].toFixed(1)+" mm":"no reading yet")+(tape?"   tape: "+tape+" mm":"")+"   "+$("cond").value;
+  g.fillStyle="rgba(0,0,0,.6)"; g.fillRect(0,c.height-fs*1.8,c.width,fs*1.8);
+  g.fillStyle="#fff"; g.font=fs+"px sans-serif"; g.textBaseline="middle"; g.fillText(txt,fs*0.5,c.height-fs*0.9,c.width-fs);
+  c.toBlob(b=>saveFile(b,"x3_photo_"+stamp()+".jpg"),"image/jpeg",0.92);
+};
+$("camRec").onclick = ()=>{
+  if(rec && rec.state!=="inactive"){ rec.stop(); return; }
+  if(!window.MediaRecorder){ log("This browser cannot record video. Use the phone's own camera app instead."); return; }
+  recMime = ["video/mp4;codecs=avc1","video/mp4","video/webm;codecs=vp9","video/webm;codecs=vp8","video/webm"].find(m=>MediaRecorder.isTypeSupported(m)) || "";
+  try{ rec = new MediaRecorder(camStream, recMime ? {mimeType:recMime, videoBitsPerSecond:5000000} : {}); }
+  catch(e){ log("Could not start recording: "+e.message); return; }
+  recChunks=[]; const t0=Date.now();
+  rec.ondataavailable = e=>{ if(e.data && e.data.size) recChunks.push(e.data); };
+  const tick=setInterval(()=>{ const s=Math.round((Date.now()-t0)/1000); $("camStatus").textContent="Recording "+Math.floor(s/60)+":"+String(s%60).padStart(2,"0"); },500);
+  rec.onstop = ()=>{ clearInterval(tick); $("camStatus").textContent=""; $("camRec").textContent="Start recording";
+    const type=(rec.mimeType||recMime||"video/webm"); saveFile(new Blob(recChunks,{type}), "x3_video_"+stamp()+(type.indexOf("mp4")>=0?".mp4":".webm")); recChunks=[]; };
+  rec.start(1000); $("camRec").textContent="Stop recording"; log("Recording started. Readings below are timed against this line.");
+};
+
 try{ const saved = JSON.parse(localStorage.getItem("x3sets")||"[]"); if (saved.length){ sets = saved; renderSets(); log("Brought back "+saved.length+" saved set(s) from last time."); } }catch(e){}
 $("clearSets").onclick = ()=>{ if($("clearSets").dataset.sure!=="1"){ $("clearSets").dataset.sure="1"; $("clearSets").textContent="Tap again to delete all saved sets"; return; } sets=[]; renderSets(); $("clearSets").dataset.sure=""; $("clearSets").textContent="Delete saved sets"; log("Saved sets deleted."); };
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(e => log("Offline copy not saved: " + e.message));
