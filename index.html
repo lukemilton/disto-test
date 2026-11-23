@@ -45,7 +45,7 @@ textarea{width:100%;height:120px;font-family:Consolas,monospace;font-size:12.5px
 <body>
 <div class="wrap">
   <div>
-    <h1>DISTO X3 Test <span class="muted">version 6.4 (phone app, camera, remote control)</span></h1>
+    <h1>DISTO X3 Test <span class="muted">version 6.5 (phone app, camera, remote control)</span></h1>
     <p class="muted">Connects to the Leica DISTO over Bluetooth, records readings and works out the spread. Open this page in Google Chrome on an Android phone, or in Chrome or Edge on a computer with Bluetooth. iPhones cannot use it (use the Leica DISTO Plan app instead).</p>
   </div>
 
@@ -527,16 +527,17 @@ function makeZip(files){
 }
 // ZIP-END
 const median = a => { if(!a.length) return null; const s=[...a].sort((x,y)=>x-y), m=s.length>>1; return s.length%2 ? s[m] : (s[m-1]+s[m])/2; };
-function frameBlob(extra){
+function frameBlob(extra, maxW, q){
   return new Promise(res=>{
     const v=$("camView"); if(!v.videoWidth){ res(null); return; }
-    const c=document.createElement("canvas"); c.width=v.videoWidth; c.height=v.videoHeight;
-    const g=c.getContext("2d"); g.drawImage(v,0,0);
+    const sc = maxW && v.videoWidth>maxW ? maxW/v.videoWidth : 1;
+    const c=document.createElement("canvas"); c.width=Math.round(v.videoWidth*sc); c.height=Math.round(v.videoHeight*sc);
+    const g=c.getContext("2d"); g.drawImage(v,0,0,c.width,c.height);
     const fs=Math.max(18,Math.round(c.height/30));
     const txt=new Date().toLocaleTimeString()+"  X3: "+(readings.length?readings[readings.length-1].toFixed(1)+" mm":"none yet")+"  zoom "+(camTrack&&camTrack.getSettings().zoom!==undefined?(+camTrack.getSettings().zoom).toFixed(1):"n/a")+"  "+extra;
     g.fillStyle="rgba(0,0,0,.6)"; g.fillRect(0,c.height-fs*1.8,c.width,fs*1.8);
     g.fillStyle="#fff"; g.font=fs+"px sans-serif"; g.textBaseline="middle"; g.fillText(txt,fs*0.5,c.height-fs*0.9,c.width-fs);
-    c.toBlob(b=>res(b),"image/jpeg",0.9);
+    c.toBlob(b=>res(b),"image/jpeg",q||0.9);
   });
 }
 let running=false, stopRun=false, lastRun=null, audioCtx=null;
@@ -707,7 +708,7 @@ $("upForget").onclick = ()=>{ try{ localStorage.removeItem("x3key"); }catch(e){}
 if(upKeyGet()) upShow("Set up. Results are sent for Claude automatically.");
 
 // ---- Remote control: Claude leaves instructions in the private store; the app carries them out and replies ----
-let remoteTimer=null, remoteBusy=false;
+let remoteTimer=null, remoteBusy=false, remoteFastUntil=0, remoteLast=0;
 const remoteSeen = () => { try{ return localStorage.getItem("x3cmd")||""; }catch(e){ return ""; } };
 async function ghGet(path){
   const r = await fetch("https://api.github.com/repos/"+GH_REPO+"/contents/"+path+"?t="+Date.now(), {headers:{Authorization:"Bearer "+upKeyGet(), Accept:"application/vnd.github.raw+json"}, cache:"no-store"});
@@ -762,6 +763,22 @@ async function remoteDo(c, files, tag){
       for(let i=0;i<n && !c._stop;i++){ const t0=Date.now(), ok=await shoot(); rows.push([new Date(t0).toLocaleTimeString(), ok?+readings[readings.length-1].toFixed(1):null, lastTilt===null?null:+(lastTilt*180/Math.PI).toFixed(4)]); if(!ok) await sleep(800); $("remoteStatus").textContent="Remote control: reading "+(i+1)+" of "+n; }
       c._rows=rows; return rows.filter(r=>r[1]!==null).length+" of "+n+" readings came back";
     }
+    case "snap": {   // quick small picture, for aiming
+      if(!camStream){ await $("camOn").onclick(); await sleep(1500); }
+      if(!camStream) return "no camera";
+      const b=await frameBlob(c.note||"snap", c.w||720, c.q||0.7); if(!b) return "no picture";
+      files.push({name:tag+"_snap.jpg", data:new Uint8Array(await b.arrayBuffer())}); return "snap taken";
+    }
+    case "aimshot": {   // one X3 reading, with a quick picture taken while its laser dot is lit
+      if(!(device&&device.gatt.connected&&cmdChar)) return "X3 not connected: Luke must tap Connect to DISTO";
+      if(!camStream){ await $("camOn").onclick(); await sleep(1500); }
+      const pShoot=shoot(), lit=await waitLaser(4000);
+      const b=camStream ? await frameBlob((c.note||"aim")+(lit?"  laser ON":"  laser off"), c.w||720, c.q||0.7) : null;
+      const ok=await pShoot;
+      if(b) files.push({name:tag+"_aim.jpg", data:new Uint8Array(await b.arrayBuffer())});
+      c._rows=[[new Date().toLocaleTimeString(), ok?+readings[readings.length-1].toFixed(1):null, lastTilt===null?null:+(lastTilt*180/Math.PI).toFixed(4)]];
+      return (ok?"reading "+readings[readings.length-1].toFixed(1)+" mm":"no reading")+", picture "+(b?"taken":"missing")+", laser "+(lit?"lit":"not caught");
+    }
     case "clear": readings=[]; render(); return "readings cleared";
     case "save": $("save").onclick(); return "set saved";
     case "test5": if(running) return "a test is already running"; $("runTest").onclick(); return "5-minute test started; results will arrive in runs/";
@@ -773,7 +790,8 @@ async function remoteDo(c, files, tag){
 }
 async function remoteTick(){
   if(remoteBusy || !upKeyGet() || document.visibilityState!=="visible") return;
-  remoteBusy=true;
+  if(Date.now()<remoteLast+(Date.now()<remoteFastUntil?1400:4000)) return;
+  remoteBusy=true; remoteLast=Date.now();
   try{
     const txt=await ghGet("control/command.json");
     $("remoteStatus").textContent="Remote control: on. Last checked "+new Date().toLocaleTimeString()+".";
@@ -789,6 +807,7 @@ async function remoteTick(){
           const enc=new TextEncoder();
           files.push({name:"reply.json", data:enc.encode(JSON.stringify({id:cmd.id, results, status:statusObj(), logTail:$("log").textContent.split("\n").slice(-40)},null,1))});
           uploadAll("control/replies/"+cmd.id, files);
+          remoteFastUntil=Date.now()+240000;
           log("Remote control: done, reply sent.");
         }
       }
@@ -799,7 +818,7 @@ async function remoteTick(){
 function remoteSet(on){
   try{ localStorage.setItem("x3remote", on?"1":"0"); }catch(e){}
   $("remoteOn").checked=on; if(remoteTimer){ clearInterval(remoteTimer); remoteTimer=null; }
-  if(on && upKeyGet()){ remoteTimer=setInterval(remoteTick,4000); remoteTick(); $("remoteStatus").textContent="Remote control: on."; if("wakeLock" in navigator) navigator.wakeLock.request("screen").then(w=>{ wake=wake||w; }).catch(()=>{}); }
+  if(on && upKeyGet()){ remoteTimer=setInterval(remoteTick,700); remoteTick(); $("remoteStatus").textContent="Remote control: on."; if("wakeLock" in navigator) navigator.wakeLock.request("screen").then(w=>{ wake=wake||w; }).catch(()=>{}); }
   else $("remoteStatus").textContent = on ? "Remote control needs the key first." : "Remote control: off.";
 }
 $("remoteOn").onchange = ()=>remoteSet($("remoteOn").checked);
