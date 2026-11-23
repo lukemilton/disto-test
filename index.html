@@ -45,7 +45,7 @@ textarea{width:100%;height:120px;font-family:Consolas,monospace;font-size:12.5px
 <body>
 <div class="wrap">
   <div>
-    <h1>DISTO X3 Test <span class="muted">version 5.9 (phone app with camera)</span></h1>
+    <h1>DISTO X3 Test <span class="muted">version 6.0 (phone app, camera, remote control)</span></h1>
     <p class="muted">Connects to the Leica DISTO over Bluetooth, records readings and works out the spread. Open this page in Google Chrome on an Android phone, or in Chrome or Edge on a computer with Bluetooth. iPhones cannot use it (use the Leica DISTO Plan app instead).</p>
   </div>
 
@@ -177,6 +177,11 @@ textarea{width:100%;height:120px;font-family:Consolas,monospace;font-size:12.5px
       <button id="upRetry">Send again</button>
       <button id="upForget">Forget key</button>
     </div>
+    <div class="row" style="margin-top:8px">
+      <label><input type="checkbox" id="remoteOn"> Let Claude control this app (needs the key, and the app open on screen)</label>
+    </div>
+    <p class="status" id="remoteStatus"></p>
+    <p class="status" id="remoteSay" style="font-size:20px;color:var(--accent)"></p>
   </div>
 
   <div class="card">
@@ -606,6 +611,7 @@ async function ghPut(path, u8){
   const r = await fetch("https://api.github.com/repos/"+GH_REPO+"/contents/"+path.split("/").map(encodeURIComponent).join("/"), {
     method:"PUT", headers:{Authorization:"Bearer "+upKeyGet(), Accept:"application/vnd.github+json"},
     body: JSON.stringify({message:"X3 test upload: "+path, content:b64(u8)}) });
+  if(r.status===409 && !ghPut.again){ ghPut.again=true; try{ await sleep(1500); return await ghPut(path,u8); } finally{ ghPut.again=false; } }
   if(!r.ok && r.status!==422) throw new Error("store said "+r.status);   // 422 = already there
 }
 function upShow(t){ $("upStatus").textContent = t; }
@@ -626,12 +632,111 @@ $("upSave").onclick = async()=>{
   const k=$("upKey").value.trim(); if(!k){ upShow("Paste the key into the box first."); return; }
   try{ localStorage.setItem("x3key",k); }catch(e){ upShow("This phone would not keep the key."); return; }
   $("upKey").value="";
-  try{ await ghPut("checks/key_test_"+stamp()+".txt", new TextEncoder().encode("Key test from the phone.\n")); upShow("Set up and working. Tested "+new Date().toLocaleTimeString()+"."); log("Automatic saving is set up and working."); upRun(); }
+  try{ await ghPut("checks/key_test_"+stamp()+".txt", new TextEncoder().encode("Key test from the phone.\n")); upShow("Set up and working. Tested "+new Date().toLocaleTimeString()+"."); log("Automatic saving is set up and working."); upRun(); remoteSet(true); }
   catch(e){ upShow("The key was not accepted ("+e.message+"). Check it and try again."); }
 };
 $("upRetry").onclick = ()=>{ if(!upQueue.length) upShow(upKeyGet()?"Nothing waiting to send.":"Not set up yet."); upRun(); };
 $("upForget").onclick = ()=>{ try{ localStorage.removeItem("x3key"); }catch(e){} upShow("Key forgotten. Not set up."); };
 if(upKeyGet()) upShow("Set up. Results are sent for Claude automatically.");
+
+// ---- Remote control: Claude leaves instructions in the private store; the app carries them out and replies ----
+let remoteTimer=null, remoteBusy=false;
+const remoteSeen = () => { try{ return localStorage.getItem("x3cmd")||""; }catch(e){ return ""; } };
+async function ghGet(path){
+  const r = await fetch("https://api.github.com/repos/"+GH_REPO+"/contents/"+path+"?t="+Date.now(), {headers:{Authorization:"Bearer "+upKeyGet(), Accept:"application/vnd.github.raw+json"}, cache:"no-store"});
+  if(r.status===404) return null; if(!r.ok) throw new Error("store said "+r.status);
+  return await r.text();
+}
+function statusObj(){
+  const s=stats(kept(readings)), cs=camTrack?camTrack.getSettings():{}, caps=(camTrack&&camTrack.getCapabilities)?camTrack.getCapabilities():{};
+  return { app:document.querySelector("h1").textContent.trim().replace(/\s+/g," "), time:new Date().toString(), connected:!!(device&&device.gatt.connected&&cmdChar), x3:device&&device.name||null,
+    camera:!!camStream, cam:{w:cs.width,h:cs.height,zoom:cs.zoom,brightness:cs.exposureCompensation,zoomRange:caps.zoom?[caps.zoom.min,caps.zoom.max]:null,brightnessRange:caps.exposureCompensation?[caps.exposureCompensation.min,caps.exposureCompensation.max]:null},
+    testRunning:running, readings:readings.length, last:readings.length?readings[readings.length-1]:null, tiltDeg:lastTilt===null?null:lastTilt*180/Math.PI,
+    stats:s, tape:$("tape").value, target:$("surface").value, conditions:$("cond").value, trim:$("trim").value, savedSets:sets.length, waitingToSend:upQueue.length, screen:[innerWidth,innerHeight], visible:document.visibilityState };
+}
+async function camSet(which, v){ const el=$(which==="zoom"?"camZoom":"camExp"); if(!camTrack||!el.oninput) return "camera or slider not available"; el.value=v; await el.oninput(); return "set to "+el.value; }
+function pick(selId, text){ const o=[...$(selId).options].find(o=>o.text.toLowerCase().indexOf(String(text).toLowerCase())>=0); if(o){ $(selId).value=o.value; return true; } const n=new Option(text); $(selId).add(n); $(selId).value=n.value; return true; }
+async function remoteDo(c, files, tag){
+  switch(c.do){
+    case "status": return "ok";
+    case "say": $("remoteSay").textContent=c.text||""; return "shown";
+    case "beep": beepInit(); beep(c.times||3); return "beeped (silent if sound was never switched on by a tap)";
+    case "set":
+      if(c.tape!==undefined){ $("tape").value=c.tape; }
+      if(c.target!==undefined) pick("surface",c.target);
+      if(c.conditions!==undefined) pick("cond",c.conditions);
+      if(c.trim!==undefined) $("trim").value=c.trim;
+      render();
+      { const out=[]; if(c.zoom!==undefined) out.push("zoom "+await camSet("zoom",c.zoom)); if(c.brightness!==undefined) out.push("brightness "+await camSet("exp",c.brightness)); return "set "+out.join(", "); }
+    case "camera": if(c.on===false){ camStop(); return "camera off"; } if(!camStream) await $("camOn").onclick(); await sleep(1200); return camStream?"camera on":"camera did not start";
+    case "photo": {
+      if(!camStream){ await $("camOn").onclick(); await sleep(1500); }
+      if(!camStream) return "no camera";
+      const el=$("camExp"), hasExp=$("expWrap").style.display!=="none", cur=+el.value;
+      const levels = c.levels && hasExp ? (Array.isArray(c.levels)?c.levels:[cur,(cur+ +el.min)/2,+el.min]) : [null];
+      let n=0;
+      for(const lv of levels){ if(lv!==null){ await camSet("exp",lv); await sleep(900); }
+        const b=await frameBlob((c.note||"remote")+(lv!==null?"  brightness "+(+lv).toFixed(1):"")); if(b){ files.push({name:tag+"_photo"+(lv!==null?"_b"+(+lv).toFixed(1):"")+".jpg", data:new Uint8Array(await b.arrayBuffer())}); n++; } }
+      if(c.levels && hasExp) await camSet("exp",cur);
+      return n+" photo(s)";
+    }
+    case "video": {
+      if(!camStream){ await $("camOn").onclick(); await sleep(1500); }
+      if(!camStream || !window.MediaRecorder) return "no camera or recorder";
+      const m=["video/mp4;codecs=avc1","video/mp4","video/webm;codecs=vp9","video/webm"].find(x=>MediaRecorder.isTypeSupported(x))||"", ch=[];
+      const r=new MediaRecorder(camStream, m?{mimeType:m,videoBitsPerSecond:3000000}:{}); r.ondataavailable=e=>{ if(e.data&&e.data.size) ch.push(e.data); };
+      const done=new Promise(res=>{ r.onstop=res; }); r.start(1000); await sleep(Math.min(60,c.seconds||10)*1000); r.stop(); await done;
+      const type=r.mimeType||"video/webm"; files.push({name:tag+"_video"+(type.indexOf("mp4")>=0?".mp4":".webm"), data:new Uint8Array(await new Blob(ch).arrayBuffer())}); return "video recorded";
+    }
+    case "readings": {
+      if(!(device&&device.gatt.connected&&cmdChar)) return "X3 not connected: Luke must tap Connect to DISTO";
+      const n=Math.min(200,c.n||30), rows=[];
+      for(let i=0;i<n && !c._stop;i++){ const t0=Date.now(), ok=await shoot(); rows.push([new Date(t0).toLocaleTimeString(), ok?+readings[readings.length-1].toFixed(1):null, lastTilt===null?null:+(lastTilt*180/Math.PI).toFixed(4)]); if(!ok) await sleep(800); $("remoteStatus").textContent="Remote control: reading "+(i+1)+" of "+n; }
+      c._rows=rows; return rows.filter(r=>r[1]!==null).length+" of "+n+" readings came back";
+    }
+    case "clear": readings=[]; render(); return "readings cleared";
+    case "save": $("save").onclick(); return "set saved";
+    case "test5": if(running) return "a test is already running"; $("runTest").onclick(); return "5-minute test started; results will arrive in runs/";
+    case "stop": if(running){ stopRun=true; return "stopping the test"; } stopAuto("Stopped by Claude."); return "stopped";
+    case "disconnect": if(device&&device.gatt.connected) device.gatt.disconnect(); return "disconnected";
+    case "reload": setTimeout(()=>location.reload(),4000); return "reloading in 4 seconds";
+    default: return "unknown instruction: "+c.do;
+  }
+}
+async function remoteTick(){
+  if(remoteBusy || !upKeyGet() || document.visibilityState!=="visible") return;
+  remoteBusy=true;
+  try{
+    const txt=await ghGet("control/command.json");
+    $("remoteStatus").textContent="Remote control: on. Last checked "+new Date().toLocaleTimeString()+".";
+    if(txt){
+      let cmd=null; try{ cmd=JSON.parse(txt); }catch(e){}
+      if(cmd && cmd.id && cmd.id!==remoteSeen()){
+        try{ localStorage.setItem("x3cmd",cmd.id); }catch(e){}
+        if(cmd.expires && Date.now()>Date.parse(cmd.expires)){ log("Remote control: ignored an old instruction ("+cmd.id+")."); }
+        else{
+          log("Remote control: carrying out "+cmd.id+" ("+(cmd.cmds||[]).map(c=>c.do).join(", ")+").");
+          const files=[], results=[];
+          for(const [i,c] of (cmd.cmds||[]).entries()){ let r; try{ r=await remoteDo(c, files, String(i+1).padStart(2,"0")); }catch(e){ r="failed: "+e.message; } results.push({do:c.do, result:r, rows:c._rows}); }
+          const enc=new TextEncoder();
+          files.push({name:"reply.json", data:enc.encode(JSON.stringify({id:cmd.id, results, status:statusObj(), logTail:$("log").textContent.split("\n").slice(-40)},null,1))});
+          uploadAll("control/replies/"+cmd.id, files);
+          log("Remote control: done, reply sent.");
+        }
+      }
+    }
+  }catch(e){ $("remoteStatus").textContent="Remote control: could not check ("+e.message+"). Trying again."; }
+  remoteBusy=false;
+}
+function remoteSet(on){
+  try{ localStorage.setItem("x3remote", on?"1":"0"); }catch(e){}
+  $("remoteOn").checked=on; if(remoteTimer){ clearInterval(remoteTimer); remoteTimer=null; }
+  if(on && upKeyGet()){ remoteTimer=setInterval(remoteTick,4000); remoteTick(); $("remoteStatus").textContent="Remote control: on."; if("wakeLock" in navigator) navigator.wakeLock.request("screen").then(w=>{ wake=wake||w; }).catch(()=>{}); }
+  else $("remoteStatus").textContent = on ? "Remote control needs the key first." : "Remote control: off.";
+}
+$("remoteOn").onchange = ()=>remoteSet($("remoteOn").checked);
+{ let r="1"; try{ r=localStorage.getItem("x3remote"); }catch(e){} remoteSet(r!=="0" && !!upKeyGet()); }
+document.addEventListener("visibilitychange", ()=>{ if(document.visibilityState==="visible" && $("remoteOn").checked && "wakeLock" in navigator) navigator.wakeLock.request("screen").catch(()=>{}); });
 
 try{ const saved = JSON.parse(localStorage.getItem("x3sets")||"[]"); if (saved.length){ sets = saved; renderSets(); log("Brought back "+saved.length+" saved set(s) from last time."); } }catch(e){}
 $("clearSets").onclick = ()=>{ if($("clearSets").dataset.sure!=="1"){ $("clearSets").dataset.sure="1"; $("clearSets").textContent="Tap again to delete all saved sets"; return; } sets=[]; renderSets(); $("clearSets").dataset.sure=""; $("clearSets").textContent="Delete saved sets"; log("Saved sets deleted."); };
