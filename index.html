@@ -45,7 +45,7 @@ textarea{width:100%;height:120px;font-family:Consolas,monospace;font-size:12.5px
 <body>
 <div class="wrap">
   <div>
-    <h1>DISTO X3 Test <span class="muted">version 5.7 (phone app with camera)</span></h1>
+    <h1>DISTO X3 Test <span class="muted">version 5.8 (phone app with camera)</span></h1>
     <p class="muted">Connects to the Leica DISTO over Bluetooth, records readings and works out the spread. Open this page in Google Chrome on an Android phone, or in Chrome or Edge on a computer with Bluetooth. iPhones cannot use it (use the Leica DISTO Plan app instead).</p>
   </div>
 
@@ -120,7 +120,8 @@ textarea{width:100%;height:120px;font-family:Consolas,monospace;font-size:12.5px
     <p class="muted">Connect the DISTO first, aim it at the post, then press the button and step away. For 5 minutes it takes a reading about every 2 to 4 seconds, a set of photos every 30 seconds (at three brightness levels if the phone allows) and a 30 second video at the start. At the end everything is saved as ONE zip file in Downloads, to send to Claude. Fill in the tape distance, target and conditions in section 3 before starting.</p>
     <div class="row">
       <button class="primary" id="runTest">Run 5-minute test</button>
-      <button id="shareRun">Send results to Claude or Drive</button>
+      <button id="shareRun">Send numbers and log to Claude</button>
+      <button id="sharePhotos">Send 9 photos to Claude</button>
       <span class="status" id="runStatus"></span>
     </div>
   </div>
@@ -561,21 +562,26 @@ $("runTest").onclick = async()=>{
 
 // Send the results out through the phone's Share menu (to the Claude app or Google Drive).
 // After a 5-minute test: summary, readings, log and photos. Otherwise: the log and the saved sets.
-$("shareRun").onclick = async()=>{
-  if(!navigator.share || !window.File){ log("This browser has no Share menu. Use the zip in Downloads, or Copy the log."); return; }
-  const typeOf = n => n.endsWith(".csv")?"text/csv":n.endsWith(".txt")?"text/plain":n.endsWith(".jpg")?"image/jpeg":"";
+function shareNow(files, what){
+  // One share call straight from the tap: phones refuse a second try without a new tap.
+  if(!navigator.share || !window.File){ log("This browser has no Share menu. Use Copy this log instead."); return; }
+  if(navigator.canShare && !navigator.canShare({files})){ log("The phone will not share "+what+". Use Copy this log instead."); return; }
+  navigator.share({files, title:"DISTO X3 test results"}).then(()=>log("Shared "+files.length+" file(s): "+what+"."))
+    .catch(e=>log(e.name==="AbortError" ? "Share cancelled." : "The phone would not share "+what+" ("+e.name+": "+e.message+")."));
+}
+// Numbers and log only (small): summary, readings and log after a 5-minute test, otherwise the log and saved sets.
+$("shareRun").onclick = ()=>{
   const enc=new TextEncoder();
-  const src = lastRun || [{name:"x3_log_"+stamp()+".txt", data:enc.encode(($("out").value?$("out").value+"\n\n":"")+$("log").textContent)}];
-  const all = src.filter(f=>typeOf(f.name)).map(f=>new File([f.data], f.name, {type:typeOf(f.name)}));
-  const textOnly = all.filter(f=>f.type!=="image/jpeg");
-  for(const files of [all, textOnly]){
-    try{
-      if(navigator.canShare && !navigator.canShare({files})) continue;
-      await navigator.share({files, title:"DISTO X3 test results"});
-      log("Shared "+files.length+" file(s)."); return;
-    }catch(e){ if(e.name==="AbortError"){ log("Share cancelled."); return; } }
-  }
-  log("The phone would not share the files. Use the zip in Downloads instead.");
+  const src = lastRun ? lastRun.filter(f=>/\.(txt|csv)$/.test(f.name)).map(f=>({name:f.name.replace(/\.csv$/,".csv.txt"), data:f.data}))
+                      : [{name:"x3_log_"+stamp()+".txt", data:enc.encode(($("out").value?$("out").value+"\n\n":"")+$("log").textContent)}];
+  shareNow(src.map(f=>new File([f.data], f.name, {type:"text/plain"})), "the numbers and log");
+};
+// Nine photos from the last 5-minute test: start, middle and end, at each brightness.
+$("sharePhotos").onclick = ()=>{
+  const ph = lastRun ? lastRun.filter(f=>f.name.endsWith(".jpg")).sort((a,b)=>a.name<b.name?-1:1) : [];
+  if(!ph.length){ log("No photos to send: run a 5-minute test first (photos are lost if the app is closed; they are still in the zip)."); return; }
+  const times=[...new Set(ph.map(f=>f.name.slice(0,10)))], pick=[times[0], times[times.length>>1], times[times.length-1]];
+  shareNow(ph.filter(f=>pick.includes(f.name.slice(0,10))).map(f=>new File([f.data], f.name, {type:"image/jpeg"})), "the photos");
 };
 
 // ---- Automatic saving: sends files to a private GitHub store, using a key kept only on this phone ----
