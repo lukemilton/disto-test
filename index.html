@@ -45,7 +45,7 @@ textarea{width:100%;height:120px;font-family:Consolas,monospace;font-size:12.5px
 <body>
 <div class="wrap">
   <div>
-    <h1>DISTO X3 Test <span class="muted">version 5.6 (phone app with camera)</span></h1>
+    <h1>DISTO X3 Test <span class="muted">version 5.7 (phone app with camera)</span></h1>
     <p class="muted">Connects to the Leica DISTO over Bluetooth, records readings and works out the spread. Open this page in Google Chrome on an Android phone, or in Chrome or Edge on a computer with Bluetooth. iPhones cannot use it (use the Leica DISTO Plan app instead).</p>
   </div>
 
@@ -167,6 +167,18 @@ textarea{width:100%;height:120px;font-family:Consolas,monospace;font-size:12.5px
   </div>
 
   <div class="card">
+    <h2>Automatic saving for Claude</h2>
+    <p class="status" id="upStatus">Not set up yet.</p>
+    <p class="muted">Once a key is saved here, every saved set, every finished 30 readings and every 5-minute test is sent by itself to a private store that Claude can read. The key stays on this phone only. Needs phone signal; if there is none, press "Send again" later.</p>
+    <div class="row">
+      <label>Key <input type="password" id="upKey" style="width:220px" placeholder="paste the key here" autocomplete="off"></label>
+      <button id="upSave">Save key and test</button>
+      <button id="upRetry">Send again</button>
+      <button id="upForget">Forget key</button>
+    </div>
+  </div>
+
+  <div class="card">
     <h2>What the page is doing</h2>
     <div class="row" style="margin-bottom:8px"><button id="copyLog">Copy this log for Claude</button><span class="muted" id="logCopied"></span></div>
     <div id="log"></div>
@@ -220,7 +232,7 @@ function ascii(dv){ let o=""; for(let i=0;i<dv.byteLength;i++){ const c=dv.getUi
 function record(mm){
   lastReadingAt = Date.now();
   readings.push(mm); log("Reading "+readings.length+": "+mm.toFixed(1)+" mm"); render();
-  if (autoLeft>0){ autoLeft--; if(autoLeft===0) stopAuto("30 readings done."); }
+  if (autoLeft>0){ autoLeft--; if(autoLeft===0){ stopAuto("30 readings done."); uploadLog("readings"); } }
 }
 // Every channel that can send is listened to, and everything it sends is written to the log.
 function onAny(ev){
@@ -329,7 +341,7 @@ $("save").onclick = ()=>{
   if (isNaN(parseFloat($("tape").value))) log("Saved without a tape distance, so this set shows steadiness only.");
   const tape=parseFloat($("tape").value);
   sets.push({...s, surface:$("surface").value, cond:$("cond").value, tape:isNaN(tape)?null:tape, off:isNaN(tape)?null:s.avg-tape});
-  renderSets(); readings=[]; render(); log("Set saved. Readings cleared for the next set.");
+  renderSets(); readings=[]; render(); log("Set saved. Readings cleared for the next set."); uploadLog("sets");
 };
 $("copy").onclick = async()=>{
   const t=$("out"); if(!t.value){ $("copied").textContent="Nothing saved yet."; return; }
@@ -540,7 +552,7 @@ $("runTest").onclick = async()=>{
   files.unshift({name:"summary.txt", data:enc.encode(lines.join("\r\n")+"\r\n")},
     {name:"readings.csv", data:enc.encode("seconds,clock,got_reading,distance_mm,ms_to_reading,tilt_raw\r\n"+rows.map(r=>[r.t.toFixed(1),r.clock,r.ok?1:0,r.ok?r.mm.toFixed(1):"",r.ok?r.ms:"",r.tilt===null?"":r.tilt].join(",")).join("\r\n")+"\r\n")},
     {name:"page_log.txt", data:enc.encode($("log").textContent.replace(/\n/g,"\r\n"))});
-  lastRun=files; try{ saveFile(makeZip(files), name+".zip"); }catch(e){ log("Could not save the zip: "+e.message); }
+  lastRun=files; uploadAll("runs/"+name, files); try{ saveFile(makeZip(files), name+".zip"); }catch(e){ log("Could not save the zip: "+e.message); }
   if(s){ sets.push({...s, surface:$("surface").value+" (5-min test)", cond:$("cond").value, tape:isNaN(tape)?null:tape, off:isNaN(tape)?null:s.avg-tape}); renderSets(); }
   for(const l of lines) log(l);
   log("5-MINUTE TEST DONE. One file saved: "+name+".zip. Send it to Claude.");
@@ -565,6 +577,42 @@ $("shareRun").onclick = async()=>{
   }
   log("The phone would not share the files. Use the zip in Downloads instead.");
 };
+
+// ---- Automatic saving: sends files to a private GitHub store, using a key kept only on this phone ----
+const GH_REPO = "lukemilton/x3-results";
+let upQueue = [], upBusy = false;
+const upKeyGet = () => { try{ return localStorage.getItem("x3key")||""; }catch(e){ return ""; } };
+function b64(u8){ let s=""; for(let i=0;i<u8.length;i+=0x8000) s += String.fromCharCode.apply(null, u8.subarray(i,i+0x8000)); return btoa(s); }
+async function ghPut(path, u8){
+  const r = await fetch("https://api.github.com/repos/"+GH_REPO+"/contents/"+path.split("/").map(encodeURIComponent).join("/"), {
+    method:"PUT", headers:{Authorization:"Bearer "+upKeyGet(), Accept:"application/vnd.github+json"},
+    body: JSON.stringify({message:"X3 test upload: "+path, content:b64(u8)}) });
+  if(!r.ok && r.status!==422) throw new Error("store said "+r.status);   // 422 = already there
+}
+function upShow(t){ $("upStatus").textContent = t; }
+async function upRun(){
+  if(upBusy) return; if(!upKeyGet()){ upShow("Not set up yet. "+(upQueue.length?upQueue.length+" file(s) waiting.":"")); return; }
+  upBusy = true; let sent=0;
+  while(upQueue.length){
+    const f = upQueue[0];
+    try{ upShow("Sending "+f.path.split("/").pop()+" ("+upQueue.length+" to go)"); await ghPut(f.path, f.data); upQueue.shift(); sent++; }
+    catch(e){ upShow("Could not send ("+e.message+"). "+upQueue.length+" file(s) waiting. Press Send again when there is signal."); log("Automatic saving stopped: "+e.message+". "+upQueue.length+" file(s) waiting."); upBusy=false; return; }
+  }
+  upBusy = false; if(sent){ upShow("All sent. Last: "+new Date().toLocaleTimeString()+"."); log("Automatic saving: "+sent+" file(s) sent for Claude."); }
+}
+// Small files first, so the numbers arrive even if the signal drops during the photos and video.
+function uploadAll(folder, files){ for(const f of [...files].sort((a,b)=>a.data.length-b.data.length)) upQueue.push({path:folder+"/"+f.name, data:f.data}); upRun(); }
+function uploadLog(kind){ const enc=new TextEncoder(); uploadAll(kind+"/"+stamp(), [{name:"results.txt", data:enc.encode($("out").value||"No sets saved yet.")},{name:"log.txt", data:enc.encode($("log").textContent)}]); }
+$("upSave").onclick = async()=>{
+  const k=$("upKey").value.trim(); if(!k){ upShow("Paste the key into the box first."); return; }
+  try{ localStorage.setItem("x3key",k); }catch(e){ upShow("This phone would not keep the key."); return; }
+  $("upKey").value="";
+  try{ await ghPut("checks/key_test_"+stamp()+".txt", new TextEncoder().encode("Key test from the phone.\n")); upShow("Set up and working. Tested "+new Date().toLocaleTimeString()+"."); log("Automatic saving is set up and working."); upRun(); }
+  catch(e){ upShow("The key was not accepted ("+e.message+"). Check it and try again."); }
+};
+$("upRetry").onclick = ()=>{ if(!upQueue.length) upShow(upKeyGet()?"Nothing waiting to send.":"Not set up yet."); upRun(); };
+$("upForget").onclick = ()=>{ try{ localStorage.removeItem("x3key"); }catch(e){} upShow("Key forgotten. Not set up."); };
+if(upKeyGet()) upShow("Set up. Results are sent for Claude automatically.");
 
 try{ const saved = JSON.parse(localStorage.getItem("x3sets")||"[]"); if (saved.length){ sets = saved; renderSets(); log("Brought back "+saved.length+" saved set(s) from last time."); } }catch(e){}
 $("clearSets").onclick = ()=>{ if($("clearSets").dataset.sure!=="1"){ $("clearSets").dataset.sure="1"; $("clearSets").textContent="Tap again to delete all saved sets"; return; } sets=[]; renderSets(); $("clearSets").dataset.sure=""; $("clearSets").textContent="Delete saved sets"; log("Saved sets deleted."); };
