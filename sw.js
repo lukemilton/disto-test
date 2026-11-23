@@ -1,6 +1,6 @@
 // Keeps a copy of the page on the phone so it opens with no phone signal.
 // Change VERSION whenever the page changes, so phones pick up the new copy.
-const VERSION = "x3-test-v5.4";
+const VERSION = "x3-test-v5.5";
 const FILES = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", e => {

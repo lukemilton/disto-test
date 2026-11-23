@@ -45,7 +45,7 @@ textarea{width:100%;height:120px;font-family:Consolas,monospace;font-size:12.5px
 <body>
 <div class="wrap">
   <div>
-    <h1>DISTO X3 Test <span class="muted">version 5.4 (phone app with camera)</span></h1>
+    <h1>DISTO X3 Test <span class="muted">version 5.5 (phone app with camera)</span></h1>
     <p class="muted">Connects to the Leica DISTO over Bluetooth, records readings and works out the spread. Open this page in Google Chrome on an Android phone, or in Chrome or Edge on a computer with Bluetooth. iPhones cannot use it (use the Leica DISTO Plan app instead).</p>
   </div>
 
@@ -116,6 +116,16 @@ textarea{width:100%;height:120px;font-family:Consolas,monospace;font-size:12.5px
   </div>
 
   <div class="card">
+    <h2>5-minute test</h2>
+    <p class="muted">Connect the DISTO first, aim it at the post, then press the button and step away. For 5 minutes it takes a reading about every 2 to 4 seconds, a set of photos every 30 seconds (at three brightness levels if the phone allows) and a 30 second video at the start. At the end everything is saved as ONE zip file in Downloads, to send to Claude. Fill in the tape distance, target and conditions in section 3 before starting.</p>
+    <div class="row">
+      <button class="primary" id="runTest">Run 5-minute test</button>
+      <button id="shareRun">Send results to Claude or Drive</button>
+      <span class="status" id="runStatus"></span>
+    </div>
+  </div>
+
+  <div class="card">
     <h2>3. Save this set</h2>
     <div class="row">
       <label>Tape distance (mm) <input type="number" id="tape" step="1" placeholder="e.g. 10000"></label>
@@ -173,7 +183,7 @@ const BASIC = "3ab1010d-f831-4395-b29d-570977d5bf94"; // X3/X4: measurement mess
 const CMD_X = "3ab10120-f831-4395-b29d-570977d5bf94"; // X3/X4: command channel
 
 const $ = id => document.getElementById(id);
-let trigCmd = "g", finding = false, lastReadingAt = 0, lastOtherAt = 0;
+let trigCmd = "g", finding = false, lastReadingAt = 0, lastOtherAt = 0, lastTilt = null;
 let device = null, cmdChar = null, chars = [], distAuto = null, readings = [], sets = [], autoTimer = null, autoLeft = 0, laserOn = false;
 
 function log(msg){ const el=$("log"); el.textContent += new Date().toLocaleTimeString()+"  "+msg+"\n"; el.scrollTop = el.scrollHeight; }
@@ -215,6 +225,7 @@ function onAny(ev){
   const c = ev.target, dv = c.value, u = c.uuid;
   let extra = "";
   let f32 = null;
+  if (u===BASIC && dv.byteLength>=8) lastTilt = dv.getFloat32(4,true);
   if (dv.byteLength >= 4){ f32 = dv.getFloat32(0,true); extra += "  as number: "+(isFinite(f32)?f32.toPrecision(7):"n/a"); }
   if (dv.byteLength >= 8){ const f64 = dv.getFloat64(0,true); if(isFinite(f64) && Math.abs(f64)<1e6 && Math.abs(f64)>1e-6) extra += "  as long number: "+f64.toPrecision(9); }
   log("   from "+short(u)+" ("+dv.byteLength+" bytes): "+hex(dv)+extra+"  text: "+ascii(dv));
@@ -416,6 +427,141 @@ $("camRec").onclick = ()=>{
   rec.onstop = ()=>{ clearInterval(tick); $("camStatus").textContent=""; $("camRec").textContent="Start recording";
     const type=(rec.mimeType||recMime||"video/webm"); saveFile(new Blob(recChunks,{type}), "x3_video_"+stamp()+(type.indexOf("mp4")>=0?".mp4":".webm")); recChunks=[]; };
   rec.start(1000); $("camRec").textContent="Stop recording"; log("Recording started. Readings below are timed against this line.");
+};
+
+// ---- 5-minute test: readings + photos + a short video, saved as one zip ----
+// ZIP-START
+const CRC_T = (()=>{ const t=new Uint32Array(256); for(let n=0;n<256;n++){ let c=n; for(let k=0;k<8;k++) c = c&1 ? 0xEDB88320^(c>>>1) : c>>>1; t[n]=c>>>0; } return t; })();
+function crc32(u8){ let c=0xFFFFFFFF; for(let i=0;i<u8.length;i++) c = CRC_T[(c^u8[i])&255]^(c>>>8); return (c^0xFFFFFFFF)>>>0; }
+// Plain (not squeezed) zip, so no extra library is needed. files: [{name, data: Uint8Array}]
+function makeZip(files){
+  const enc=new TextEncoder(), parts=[], central=[]; let offset=0;
+  const d=new Date(), dosTime=(d.getHours()<<11)|(d.getMinutes()<<5)|(d.getSeconds()>>1), dosDate=((d.getFullYear()-1980)<<9)|((d.getMonth()+1)<<5)|d.getDate();
+  for(const f of files){
+    const nm=enc.encode(f.name), crc=crc32(f.data), n=f.data.length;
+    const lh=new DataView(new ArrayBuffer(30));
+    lh.setUint32(0,0x04034b50,true); lh.setUint16(4,20,true); lh.setUint16(6,0x0800,true); lh.setUint16(8,0,true);
+    lh.setUint16(10,dosTime,true); lh.setUint16(12,dosDate,true); lh.setUint32(14,crc,true); lh.setUint32(18,n,true); lh.setUint32(22,n,true);
+    lh.setUint16(26,nm.length,true); lh.setUint16(28,0,true);
+    parts.push(lh.buffer, nm, f.data);
+    const ch=new DataView(new ArrayBuffer(46));
+    ch.setUint32(0,0x02014b50,true); ch.setUint16(4,20,true); ch.setUint16(6,20,true); ch.setUint16(8,0x0800,true); ch.setUint16(10,0,true);
+    ch.setUint16(12,dosTime,true); ch.setUint16(14,dosDate,true); ch.setUint32(16,crc,true); ch.setUint32(20,n,true); ch.setUint32(24,n,true);
+    ch.setUint16(28,nm.length,true); ch.setUint32(42,offset,true);
+    central.push(ch.buffer, nm);
+    offset += 30+nm.length+n;
+  }
+  let cdSize=0; for(const c of central) cdSize += c.byteLength;
+  const end=new DataView(new ArrayBuffer(22));
+  end.setUint32(0,0x06054b50,true); end.setUint16(8,files.length,true); end.setUint16(10,files.length,true); end.setUint32(12,cdSize,true); end.setUint32(16,offset,true);
+  return new Blob([...parts, ...central, end.buffer], {type:"application/zip"});
+}
+// ZIP-END
+const median = a => { if(!a.length) return null; const s=[...a].sort((x,y)=>x-y), m=s.length>>1; return s.length%2 ? s[m] : (s[m-1]+s[m])/2; };
+function frameBlob(extra){
+  return new Promise(res=>{
+    const v=$("camView"); if(!v.videoWidth){ res(null); return; }
+    const c=document.createElement("canvas"); c.width=v.videoWidth; c.height=v.videoHeight;
+    const g=c.getContext("2d"); g.drawImage(v,0,0);
+    const fs=Math.max(18,Math.round(c.height/30));
+    const txt=new Date().toLocaleTimeString()+"  X3: "+(readings.length?readings[readings.length-1].toFixed(1)+" mm":"none yet")+"  "+extra;
+    g.fillStyle="rgba(0,0,0,.6)"; g.fillRect(0,c.height-fs*1.8,c.width,fs*1.8);
+    g.fillStyle="#fff"; g.font=fs+"px sans-serif"; g.textBaseline="middle"; g.fillText(txt,fs*0.5,c.height-fs*0.9,c.width-fs);
+    c.toBlob(b=>res(b),"image/jpeg",0.9);
+  });
+}
+let running=false, stopRun=false, lastRun=null;
+$("runTest").onclick = async()=>{
+  if(running){ stopRun=true; $("runStatus").textContent="Stopping and saving..."; return; }
+  if(!cmdChar || !device || !device.gatt.connected){ log("5-minute test: connect to the DISTO first."); $("runStatus").textContent="Connect to the DISTO first."; return; }
+  if(!camStream){ try{ await $("camOn").onclick(); }catch(e){} }
+  running=true; stopRun=false; $("runTest").textContent="Stop test early (still saves)";
+  const DUR=300000, T0=Date.now(), name="x3_5min_"+stamp(), files=[], rows=[], notes=[];
+  readings=[]; render();
+  log("5-MINUTE TEST STARTED. Keep clear of the beam. Camera: "+(camStream?"on":"NOT on (readings only)")+".");
+  // 30 second video at the start
+  let clip=null, clipChunks=[], clipDone=Promise.resolve(), clipType="";
+  if(camStream && window.MediaRecorder){
+    try{
+      const m=["video/mp4;codecs=avc1","video/mp4","video/webm;codecs=vp9","video/webm;codecs=vp8","video/webm"].find(x=>MediaRecorder.isTypeSupported(x))||"";
+      clip=new MediaRecorder(camStream, m?{mimeType:m,videoBitsPerSecond:5000000}:{});
+      clip.ondataavailable=e=>{ if(e.data&&e.data.size) clipChunks.push(e.data); };
+      clipDone=new Promise(r=>{ clip.onstop=r; }); clip.start(1000);
+      setTimeout(()=>{ if(clip.state!=="inactive") clip.stop(); },30000);
+    }catch(e){ clip=null; notes.push("Video clip failed to start: "+e.message); }
+  }
+  // photos every 30 seconds, at up to three brightness levels
+  const hasExp = $("expWrap").style.display!=="none";
+  async function photoSet(sec){
+    if(!camStream || !$("camView").videoWidth) return;
+    const el=$("camExp"), cur=+el.value, lo=+el.min;
+    const levels = hasExp ? [...new Set([cur,(cur+lo)/2,lo].map(x=>+x.toFixed(2)))] : [null];
+    for(const lv of levels){
+      if(stopRun) break;
+      if(lv!==null){ try{ await camTrack.applyConstraints({advanced:[{exposureMode:"continuous",exposureCompensation:lv}]}); }catch(e){} await sleep(900); }
+      const b=await frameBlob("t+"+sec+"s"+(lv!==null?"  brightness "+lv.toFixed(1):""));
+      if(b) files.push({name:"photo_"+String(sec).padStart(3,"0")+"s"+(lv!==null?"_b"+lv.toFixed(1):"")+".jpg", data:new Uint8Array(await b.arrayBuffer())});
+    }
+    if(hasExp){ try{ await camTrack.applyConstraints({advanced:[{exposureMode:"continuous",exposureCompensation:cur}]}); }catch(e){} }
+  }
+  const photoLoop=(async()=>{ let k=0; while(!stopRun && Date.now()-T0<DUR){ if(Date.now()<T0+k*30000){ await sleep(250); continue; } try{ await photoSet(k*30); }catch(e){ notes.push("Photo at "+(k*30)+"s failed: "+e.message); } k++; } })();
+  // readings, one after another, for the whole time
+  while(!stopRun && Date.now()-T0<DUR){
+    if(!device || !device.gatt.connected){ notes.push("DISTO disconnected at "+((Date.now()-T0)/1000).toFixed(0)+" s."); log("5-minute test: the DISTO disconnected."); break; }
+    const t0=Date.now(), ok=await shoot();
+    rows.push({t:(t0-T0)/1000, clock:new Date(t0).toLocaleTimeString(), ok, mm: ok?readings[readings.length-1]:null, ms: ok?lastReadingAt-t0:null, tilt:lastTilt});
+    const left=Math.max(0,Math.round((DUR-(Date.now()-T0))/1000));
+    $("runStatus").textContent="Running: "+Math.floor(left/60)+":"+String(left%60).padStart(2,"0")+" left, "+rows.filter(r=>r.ok).length+" readings, "+files.length+" photos";
+    if(!ok) await sleep(1000);
+  }
+  stopRun=true; await photoLoop;
+  if(clip){ if(clip.state!=="inactive") clip.stop(); await clipDone; clipType=clip.mimeType||"video/webm";
+    if(clipChunks.length) files.push({name:"video_first_30s"+(clipType.indexOf("mp4")>=0?".mp4":".webm"), data:new Uint8Array(await new Blob(clipChunks).arrayBuffer())}); }
+  // work out the results
+  const good=rows.filter(r=>r.ok), mm=good.map(r=>r.mm), s=stats(mm), med=median(mm), tape=parseFloat($("tape").value);
+  const secs=rows.length?rows[rows.length-1].t:0;
+  const firstMin=stats(good.filter(r=>r.t<60).map(r=>r.mm)), lastMin=stats(good.filter(r=>r.t>=secs-60).map(r=>r.mm));
+  const odd = med===null?0:mm.filter(v=>Math.abs(v-med)>5).length;
+  const cs = camTrack?camTrack.getSettings():{};
+  const lines=["DISTO X3 5-minute test  "+name, "Started "+new Date(T0).toLocaleString()+", ran "+secs.toFixed(0)+" s",
+    "Target: "+$("surface").value+" | Conditions: "+$("cond").value+" | Tape: "+(isNaN(tape)?"not entered":tape+" mm"),
+    "Shots tried: "+rows.length+" | readings back: "+good.length+" | no reading: "+(rows.length-good.length),
+    s ? "Average "+s.avg.toFixed(2)+" mm | middle value "+med.toFixed(1)+" mm | lowest "+s.min.toFixed(1)+" | highest "+s.max.toFixed(1)+" | spread "+s.spread.toFixed(1)+" mm | typical scatter "+s.sd.toFixed(2)+" mm" : "No readings came back.",
+    s && !isNaN(tape) ? "Average minus tape: "+(s.avg-tape).toFixed(1)+" mm" : "",
+    "Readings more than 5 mm from the middle value: "+odd,
+    firstMin&&lastMin ? "First minute average "+firstMin.avg.toFixed(2)+" mm ("+firstMin.n+" readings), last minute "+lastMin.avg.toFixed(2)+" mm ("+lastMin.n+"), change "+(lastMin.avg-firstMin.avg).toFixed(2)+" mm" : "",
+    good.length ? "Time for a reading to come back (includes the laser-on press): middle "+median(good.map(r=>r.ms)).toFixed(0)+" ms, slowest "+Math.max(...good.map(r=>r.ms))+" ms" : "",
+    "Camera: "+(camStream?(cs.width+" x "+cs.height+", zoom "+(cs.zoom!==undefined?cs.zoom:"n/a")+", brightness setting "+(cs.exposureCompensation!==undefined?cs.exposureCompensation:"n/a")+", brightness levels tried: "+(hasExp?"yes":"no, phone does not offer it")):"off"),
+    "Photos: "+files.filter(f=>f.name.startsWith("photo")).length+" | video clip: "+(files.some(f=>f.name.startsWith("video"))?"yes":"no"),
+    "Phone: "+navigator.userAgent, ...notes].filter(Boolean);
+  const enc=new TextEncoder();
+  files.unshift({name:"summary.txt", data:enc.encode(lines.join("\r\n")+"\r\n")},
+    {name:"readings.csv", data:enc.encode("seconds,clock,got_reading,distance_mm,ms_to_reading,tilt_raw\r\n"+rows.map(r=>[r.t.toFixed(1),r.clock,r.ok?1:0,r.ok?r.mm.toFixed(1):"",r.ok?r.ms:"",r.tilt===null?"":r.tilt].join(",")).join("\r\n")+"\r\n")},
+    {name:"page_log.txt", data:enc.encode($("log").textContent.replace(/\n/g,"\r\n"))});
+  lastRun=files; try{ saveFile(makeZip(files), name+".zip"); }catch(e){ log("Could not save the zip: "+e.message); }
+  if(s){ sets.push({...s, surface:$("surface").value+" (5-min test)", cond:$("cond").value, tape:isNaN(tape)?null:tape, off:isNaN(tape)?null:s.avg-tape}); renderSets(); }
+  for(const l of lines) log(l);
+  log("5-MINUTE TEST DONE. One file saved: "+name+".zip. Send it to Claude.");
+  $("runStatus").textContent="Done. Saved "+name+".zip in Downloads."; $("runTest").textContent="Run 5-minute test"; running=false;
+};
+
+// Send the results out through the phone's Share menu (to the Claude app or Google Drive).
+// After a 5-minute test: summary, readings, log and photos. Otherwise: the log and the saved sets.
+$("shareRun").onclick = async()=>{
+  if(!navigator.share || !window.File){ log("This browser has no Share menu. Use the zip in Downloads, or Copy the log."); return; }
+  const typeOf = n => n.endsWith(".csv")?"text/csv":n.endsWith(".txt")?"text/plain":n.endsWith(".jpg")?"image/jpeg":"";
+  const enc=new TextEncoder();
+  const src = lastRun || [{name:"x3_log_"+stamp()+".txt", data:enc.encode(($("out").value?$("out").value+"\n\n":"")+$("log").textContent)}];
+  const all = src.filter(f=>typeOf(f.name)).map(f=>new File([f.data], f.name, {type:typeOf(f.name)}));
+  const textOnly = all.filter(f=>f.type!=="image/jpeg");
+  for(const files of [all, textOnly]){
+    try{
+      if(navigator.canShare && !navigator.canShare({files})) continue;
+      await navigator.share({files, title:"DISTO X3 test results"});
+      log("Shared "+files.length+" file(s)."); return;
+    }catch(e){ if(e.name==="AbortError"){ log("Share cancelled."); return; } }
+  }
+  log("The phone would not share the files. Use the zip in Downloads instead.");
 };
 
 try{ const saved = JSON.parse(localStorage.getItem("x3sets")||"[]"); if (saved.length){ sets = saved; renderSets(); log("Brought back "+saved.length+" saved set(s) from last time."); } }catch(e){}
