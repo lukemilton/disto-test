@@ -45,7 +45,7 @@ textarea{width:100%;height:120px;font-family:Consolas,monospace;font-size:12.5px
 <body>
 <div class="wrap">
   <div>
-    <h1>DISTO X3 Test <span class="muted">version 6.0 (phone app, camera, remote control)</span></h1>
+    <h1>DISTO X3 Test <span class="muted">version 6.1 (phone app, camera, remote control)</span></h1>
     <p class="muted">Connects to the Leica DISTO over Bluetooth, records readings and works out the spread. Open this page in Google Chrome on an Android phone, or in Chrome or Edge on a computer with Bluetooth. iPhones cannot use it (use the Leica DISTO Plan app instead).</p>
   </div>
 
@@ -132,6 +132,7 @@ textarea{width:100%;height:120px;font-family:Consolas,monospace;font-size:12.5px
       <label>Tape distance (mm) <input type="number" id="tape" step="1" placeholder="e.g. 10000"></label>
       <label>Target
         <select id="surface">
+          <option>Claude decides from the photos</option>
           <option>Plate, matte white</option>
           <option>Plate, reflective tape</option>
           <option>Round post, matte white</option>
@@ -141,6 +142,7 @@ textarea{width:100%;height:120px;font-family:Consolas,monospace;font-size:12.5px
       </label>
       <label>Conditions
         <select id="cond">
+          <option>Claude decides from the photos</option>
           <option>Full sun, midday</option>
           <option>Full sun, morning</option>
           <option>Shade</option>
@@ -202,6 +204,7 @@ const CMD_X = "3ab10120-f831-4395-b29d-570977d5bf94"; // X3/X4: command channel
 
 const $ = id => document.getElementById(id);
 let trigCmd = "g", finding = false, lastReadingAt = 0, lastOtherAt = 0, lastTilt = null;
+let sessionRows = [], autoPhotos = [];
 let device = null, cmdChar = null, chars = [], distAuto = null, readings = [], sets = [], autoTimer = null, autoLeft = 0, laserOn = false;
 
 function log(msg){ const el=$("log"); el.textContent += new Date().toLocaleTimeString()+"  "+msg+"\n"; el.scrollTop = el.scrollHeight; }
@@ -237,8 +240,8 @@ function hex(dv){ let o=[]; for(let i=0;i<dv.byteLength;i++) o.push(dv.getUint8(
 function ascii(dv){ let o=""; for(let i=0;i<dv.byteLength;i++){ const c=dv.getUint8(i); o += (c>=32&&c<127)?String.fromCharCode(c):"."; } return o; }
 function record(mm){
   lastReadingAt = Date.now();
-  readings.push(mm); log("Reading "+readings.length+": "+mm.toFixed(1)+" mm"); render();
-  if (autoLeft>0){ autoLeft--; if(autoLeft===0){ stopAuto("30 readings done."); uploadLog("readings"); } }
+  readings.push(mm); sessionRows.push([new Date().toLocaleTimeString(), mm.toFixed(1), lastTilt===null?"":(lastTilt*180/Math.PI).toFixed(4)]); log("Reading "+readings.length+": "+mm.toFixed(1)+" mm"); render();
+  if (autoLeft>0){ autoLeft--; if(autoLeft===0){ stopAuto("30 readings done."); autoShot("end").then(()=>uploadLog("readings")); } }
 }
 // Every channel that can send is listened to, and everything it sends is written to the log.
 function onAny(ev){
@@ -328,7 +331,7 @@ async function shoot(){
 }
 $("trigger").onclick = async()=>{ log("Sent a measure command ("+show(tc())+")."); const ok=await shoot(); log(ok?"A reading came back. Remote triggering works.":"No reading came back. If the DISTO is not paired with this computer, pair it in Windows Bluetooth settings and try again."); };
 $("auto").onclick = ()=>{
-  if(autoTimer) return; autoLeft=30; $("stop").disabled=false; log("Taking 30 readings, one every 2 seconds. Keep the DISTO still.");
+  if(autoTimer) return; autoPhotos=[]; autoShot("start"); autoLeft=30; $("stop").disabled=false; log("Taking 30 readings, one every 2 seconds. Keep the DISTO still.");
   let sent=0, busy=false; const tick=async()=>{ if(busy) return; if(sent>=30||autoLeft<=0){ clearInterval(autoTimer); autoTimer=null; return; } busy=true; sent++; await shoot(); busy=false; };
   tick(); autoTimer=setInterval(tick,2500);
   setTimeout(()=>{ if(autoLeft>0 && autoTimer===null) stopAuto("Stopped: only "+(30-autoLeft)+" of 30 readings came back."); },150000);
@@ -347,7 +350,7 @@ $("save").onclick = ()=>{
   if (isNaN(parseFloat($("tape").value))) log("Saved without a tape distance, so this set shows steadiness only.");
   const tape=parseFloat($("tape").value);
   sets.push({...s, surface:$("surface").value, cond:$("cond").value, tape:isNaN(tape)?null:tape, off:isNaN(tape)?null:s.avg-tape});
-  renderSets(); readings=[]; render(); log("Set saved. Readings cleared for the next set."); uploadLog("sets");
+  renderSets(); readings=[]; render(); log("Set saved. Readings cleared for the next set."); (camStream?autoShot("set"):Promise.resolve()).then(()=>uploadLog("sets"));
 };
 $("copy").onclick = async()=>{
   const t=$("out"); if(!t.value){ $("copied").textContent="Nothing saved yet."; return; }
@@ -627,7 +630,21 @@ async function upRun(){
 }
 // Small files first, so the numbers arrive even if the signal drops during the photos and video.
 function uploadAll(folder, files){ for(const f of [...files].sort((a,b)=>a.data.length-b.data.length)) upQueue.push({path:folder+"/"+f.name, data:f.data}); upRun(); }
-function uploadLog(kind){ const enc=new TextEncoder(); uploadAll(kind+"/"+stamp(), [{name:"results.txt", data:enc.encode($("out").value||"No sets saved yet.")},{name:"log.txt", data:enc.encode($("log").textContent)}]); }
+// A photo goes with every test, so Claude can see where the laser was pointed and what the light was like.
+async function autoShot(label){
+  try{
+    if(!camStream){ await $("camOn").onclick(); await sleep(1500); }
+    if(!camStream) return;
+    const b=await frameBlob(label); if(b) autoPhotos.push({name:"photo_"+label+".jpg", data:new Uint8Array(await b.arrayBuffer())});
+  }catch(e){}
+}
+function uploadLog(kind){
+  const enc=new TextEncoder(), cs=camTrack?camTrack.getSettings():{};
+  const info="Target: "+$("surface").value+"\nConditions: "+$("cond").value+"\nTape: "+($("tape").value||"not entered")+" mm\nCamera zoom: "+(cs.zoom!==undefined?cs.zoom:"n/a")+"\n\n";
+  const files=[{name:"results.txt", data:enc.encode(info+($("out").value||"No sets saved yet."))},{name:"log.txt", data:enc.encode($("log").textContent)},
+    {name:"readings.csv", data:enc.encode("clock,distance_mm,tilt_deg\r\n"+sessionRows.map(r=>r.join(",")).join("\r\n")+"\r\n")}, ...autoPhotos];
+  autoPhotos=[]; uploadAll(kind+"/"+stamp(), files);
+}
 $("upSave").onclick = async()=>{
   const k=$("upKey").value.trim(); if(!k){ upShow("Paste the key into the box first."); return; }
   try{ localStorage.setItem("x3key",k); }catch(e){ upShow("This phone would not keep the key."); return; }
