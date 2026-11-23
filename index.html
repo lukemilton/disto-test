@@ -3,7 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DISTO X3 Test v5</title>
+<title>DISTO X3 Test</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0f5fa8">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
 <style>
 :root{--bg:#eef0ec;--panel:#fbfcfa;--ink:#18232b;--muted:#5b6871;--line:#cfd5d0;--accent:#0f5fa8;--good:#2c8a4b;--warn:#c98a12;--bad:#c23b2e}
 *{box-sizing:border-box}
@@ -39,7 +43,7 @@ textarea{width:100%;height:120px;font-family:Consolas,monospace;font-size:12.5px
 <body>
 <div class="wrap">
   <div>
-    <h1>DISTO X3 Test <span class="muted">version 5.1 (phone)</span></h1>
+    <h1>DISTO X3 Test <span class="muted">version 5.2 (phone app)</span></h1>
     <p class="muted">Connects to the Leica DISTO over Bluetooth, records readings and works out the spread. Open this page in Google Chrome on an Android phone, or in Chrome or Edge on a computer with Bluetooth. iPhones cannot use it (use the Leica DISTO Plan app instead).</p>
   </div>
 
@@ -123,7 +127,11 @@ textarea{width:100%;height:120px;font-family:Consolas,monospace;font-size:12.5px
     </div>
     <div class="row" style="margin-top:8px">
       <button id="copy">Copy results for Claude</button>
+      <button id="clearSets">Delete saved sets</button>
       <span class="muted" id="copied"></span>
+    </div>
+    <p class="muted">Saved sets stay on this phone even if you close the app, until you delete them.</p>
+    <div>
     </div>
     <textarea id="out" readonly placeholder="Saved results appear here. Copy this and paste it to Claude."></textarea>
   </div>
@@ -280,7 +288,8 @@ $("tape").oninput = render;
 $("trim").oninput = render;
 function renderSets(){
   $("sets").innerHTML = sets.map(s=>"<tr><td>"+s.surface+"</td><td>"+s.cond+"</td><td>"+(s.tape??"")+"</td><td>"+s.n+"</td><td>"+s.avg.toFixed(1)+"</td><td>"+s.spread.toFixed(1)+"</td><td>"+s.sd.toFixed(2)+"</td><td>"+(s.off===null?"":(s.off>=0?"+":"")+s.off.toFixed(1))+"</td></tr>").join("");
-  $("out").value = sets.length ? "DISTO X3 test results\n"+sets.map(s=>[s.surface,s.cond,"tape "+(s.tape??"not entered")+" mm","n="+s.n,"avg "+s.avg.toFixed(1),"spread "+s.spread.toFixed(1),"scatter "+s.sd.toFixed(2),"avg-tape "+(s.off===null?"n/a":s.off.toFixed(1)),"min "+s.min.toFixed(1),"max "+s.max.toFixed(1)].join(" | ")).join("\n")+"\nRemote trigger channel found: "+(cmdChar?"yes":"no / not connected") : "";
+  try{ localStorage.setItem("x3sets", JSON.stringify(sets)); }catch(e){}
+  $("out").value = sets.length ?"DISTO X3 test results\n"+sets.map(s=>[s.surface,s.cond,"tape "+(s.tape??"not entered")+" mm","n="+s.n,"avg "+s.avg.toFixed(1),"spread "+s.spread.toFixed(1),"scatter "+s.sd.toFixed(2),"avg-tape "+(s.off===null?"n/a":s.off.toFixed(1)),"min "+s.min.toFixed(1),"max "+s.max.toFixed(1)].join(" | ")).join("\n")+"\nRemote trigger channel found: "+(cmdChar?"yes":"no / not connected") : "";
 }
 $("save").onclick = ()=>{
   const s=stats(kept(readings)); if(!s){ log("No readings to save yet."); return; }
@@ -325,6 +334,9 @@ $("copyLog").onclick = async()=>{
   catch(e){ $("logCopied").textContent="Could not copy. Select the text in the box and press Ctrl+C."; }
 };
 render();
+try{ const saved = JSON.parse(localStorage.getItem("x3sets")||"[]"); if (saved.length){ sets = saved; renderSets(); log("Brought back "+saved.length+" saved set(s) from last time."); } }catch(e){}
+$("clearSets").onclick = ()=>{ if($("clearSets").dataset.sure!=="1"){ $("clearSets").dataset.sure="1"; $("clearSets").textContent="Tap again to delete all saved sets"; return; } sets=[]; renderSets(); $("clearSets").dataset.sure=""; $("clearSets").textContent="Delete saved sets"; log("Saved sets deleted."); };
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(e => log("Offline copy not saved: " + e.message));
 log(navigator.bluetooth ? "Ready. Press \"Connect to DISTO\"." : "This browser cannot use Bluetooth. Open this page in Google Chrome on an Android phone, or Chrome or Edge on a computer.");
 </script>
 </body>
