@@ -45,7 +45,7 @@ textarea{width:100%;height:120px;font-family:Consolas,monospace;font-size:12.5px
 <body>
 <div class="wrap">
   <div>
-    <h1>DISTO X3 Test <span class="muted">version 6.2 (phone app, camera, remote control)</span></h1>
+    <h1>DISTO X3 Test <span class="muted">version 6.3 (phone app, camera, remote control)</span></h1>
     <p class="muted">Connects to the Leica DISTO over Bluetooth, records readings and works out the spread. Open this page in Google Chrome on an Android phone, or in Chrome or Edge on a computer with Bluetooth. iPhones cannot use it (use the Leica DISTO Plan app instead).</p>
   </div>
 
@@ -206,6 +206,27 @@ const CMD_X = "3ab10120-f831-4395-b29d-570977d5bf94"; // X3/X4: command channel
 const $ = id => document.getElementById(id);
 let trigCmd = "g", finding = false, lastReadingAt = 0, lastOtherAt = 0, lastTilt = null;
 let sessionRows = [], autoPhotos = [];
+// ---- Phone sensors: which way the phone is leaning, how much it is shaking, light level, battery, position ----
+let sens={alpha:null,beta:null,gamma:null,ax:null,ay:null,az:null,lux:null}, vibSum=0, vibN=0, lastSnap=["","","","",""], phoneCache={}, geo=null;
+window.addEventListener("deviceorientation", e=>{ sens.alpha=e.alpha; sens.beta=e.beta; sens.gamma=e.gamma; });
+window.addEventListener("devicemotion", e=>{ const g=e.accelerationIncludingGravity, a=e.acceleration; if(g){ sens.ax=g.x; sens.ay=g.y; sens.az=g.z; } if(a && a.x!==null){ vibSum+=a.x*a.x+a.y*a.y+a.z*a.z; vibN++; } });
+try{ const L=new AmbientLightSensor({frequency:1}); L.onreading=()=>{ sens.lux=L.illuminance; }; L.onerror=()=>{}; L.start(); }catch(e){}
+// lean front-back, lean side-side, compass-like turn (degrees), shake since the last reading (m/s2), light (lux)
+function sensSnap(){ const vib=vibN?Math.sqrt(vibSum/vibN):null; vibSum=0; vibN=0; return [sens.beta,sens.gamma,sens.alpha,vib,sens.lux].map(v=>v===null||v===undefined?"":(+v).toFixed(3)); }
+function geoAsk(){ try{ navigator.geolocation.getCurrentPosition(p=>{ geo={lat:p.coords.latitude, lon:p.coords.longitude, accuracy_m:p.coords.accuracy, altitude_m:p.coords.altitude, at:new Date(p.timestamp).toString()}; }, ()=>{}, {enableHighAccuracy:true, timeout:15000}); }catch(e){} }
+async function phoneRefresh(){
+  const o={time:new Date().toString(), timezone:Intl.DateTimeFormat().resolvedOptions().timeZone, userAgent:navigator.userAgent, language:navigator.language,
+    screen:{w:screen.width,h:screen.height,pixelRatio:devicePixelRatio,orientation:(screen.orientation&&screen.orientation.type)||null}, window:[innerWidth,innerHeight],
+    memoryGB:navigator.deviceMemory||null, cores:navigator.hardwareConcurrency||null, installedApp:matchMedia("(display-mode: standalone)").matches, online:navigator.onLine,
+    sensors:{leanFrontBack_deg:sens.beta, leanSide_deg:sens.gamma, turn_deg:sens.alpha, gravity:[sens.ax,sens.ay,sens.az], light_lux:sens.lux}, position:geo};
+  try{ const c=navigator.connection; if(c) o.network={type:c.type||null, speed:c.effectiveType||null, downlinkMbps:c.downlink||null}; }catch(e){}
+  try{ if(navigator.getBattery){ const b=await navigator.getBattery(); o.battery={percent:Math.round(b.level*100), charging:b.charging}; } }catch(e){}
+  try{ if(navigator.userAgentData){ const u=await navigator.userAgentData.getHighEntropyValues(["model","platform","platformVersion","fullVersionList"]); o.phone={model:u.model, system:u.platform+" "+u.platformVersion, browser:(u.fullVersionList||[]).map(b=>b.brand+" "+b.version).join(", ")}; } }catch(e){}
+  try{ if(navigator.storage&&navigator.storage.estimate){ const s=await navigator.storage.estimate(); o.storageFreeMB=Math.round((s.quota-s.usage)/1e6); } }catch(e){}
+  try{ const q=await navigator.permissions.query({name:"geolocation"}); o.positionAllowed=q.state; if(q.state==="granted") geoAsk(); }catch(e){}
+  phoneCache=o; return o;
+}
+setInterval(phoneRefresh,30000); setTimeout(phoneRefresh,1500);
 let device = null, cmdChar = null, chars = [], distAuto = null, readings = [], sets = [], autoTimer = null, autoLeft = 0, laserOn = false;
 
 function log(msg){ const el=$("log"); el.textContent += new Date().toLocaleTimeString()+"  "+msg+"\n"; el.scrollTop = el.scrollHeight; }
@@ -241,7 +262,7 @@ function hex(dv){ let o=[]; for(let i=0;i<dv.byteLength;i++) o.push(dv.getUint8(
 function ascii(dv){ let o=""; for(let i=0;i<dv.byteLength;i++){ const c=dv.getUint8(i); o += (c>=32&&c<127)?String.fromCharCode(c):"."; } return o; }
 function record(mm){
   lastReadingAt = Date.now();
-  readings.push(mm); sessionRows.push([new Date().toLocaleTimeString(), mm.toFixed(1), lastTilt===null?"":(lastTilt*180/Math.PI).toFixed(4)]); log("Reading "+readings.length+": "+mm.toFixed(1)+" mm"); render();
+  readings.push(mm); lastSnap=sensSnap(); sessionRows.push([new Date().toLocaleTimeString(), mm.toFixed(1), lastTilt===null?"":(lastTilt*180/Math.PI).toFixed(4), ...lastSnap]); log("Reading "+readings.length+": "+mm.toFixed(1)+" mm"); render();
   if (autoLeft>0){ autoLeft--; if(autoLeft===0){ stopAuto("30 readings done."); autoShot("end").then(()=>uploadLog("readings")); } }
 }
 // Every channel that can send is listened to, and everything it sends is written to the log.
@@ -422,7 +443,7 @@ $("camOn").onclick = async()=>{
     slider("zoomWrap","camZoom","zoomVal",caps.zoom,"zoom");
     slider("expWrap","camExp","expVal",caps.exposureCompensation,"exposureCompensation",{exposureMode:"continuous"});
     const s=camTrack.getSettings(); log("Camera on: "+(s.width||"?")+" x "+(s.height||"?")+". Zoom slider: "+(caps.zoom?"yes":"not offered by this phone")+". Brightness slider: "+(caps.exposureCompensation?"yes":"not offered by this phone")+".");
-    keepAwake(); camList();
+    keepAwake(); camList(); geoAsk(); phoneRefresh();
   }catch(e){ log("Could not start the camera: "+e.message+". Allow the camera when the phone asks."); }
 };
 // The phone has several cameras; list them so a damaged one can be avoided, and record which one is in use.
@@ -567,7 +588,7 @@ $("runTest").onclick = async()=>{
   while(!stopRun && Date.now()-T0<DUR){
     if(!device || !device.gatt.connected){ notes.push("DISTO disconnected at "+((Date.now()-T0)/1000).toFixed(0)+" s."); log("5-minute test: the DISTO disconnected."); break; }
     const t0=Date.now(), ok=await shoot();
-    rows.push({t:(t0-T0)/1000, clock:new Date(t0).toLocaleTimeString(), ok, mm: ok?readings[readings.length-1]:null, ms: ok?lastReadingAt-t0:null, tilt:lastTilt});
+    rows.push({t:(t0-T0)/1000, clock:new Date(t0).toLocaleTimeString(), ok, mm: ok?readings[readings.length-1]:null, ms: ok?lastReadingAt-t0:null, tilt:lastTilt, sn:lastSnap});
     const left=Math.max(0,Math.round((DUR-(Date.now()-T0))/1000));
     $("runStatus").textContent="Running: "+Math.floor(left/60)+":"+String(left%60).padStart(2,"0")+" left, "+rows.filter(r=>r.ok).length+" readings, "+files.length+" photos";
     if(!ok) await sleep(1000);
@@ -594,8 +615,8 @@ $("runTest").onclick = async()=>{
     "Phone: "+navigator.userAgent, ...notes].filter(Boolean);
   const enc=new TextEncoder();
   files.unshift({name:"summary.txt", data:enc.encode(lines.join("\r\n")+"\r\n")},
-    {name:"readings.csv", data:enc.encode("seconds,clock,got_reading,distance_mm,ms_to_reading,tilt_raw\r\n"+rows.map(r=>[r.t.toFixed(1),r.clock,r.ok?1:0,r.ok?r.mm.toFixed(1):"",r.ok?r.ms:"",r.tilt===null?"":r.tilt].join(",")).join("\r\n")+"\r\n")},
-    {name:"camera.json", data:enc.encode(JSON.stringify(camInfo(),null,1))},
+    {name:"readings.csv", data:enc.encode("seconds,clock,got_reading,distance_mm,ms_to_reading,x3_tilt_radians,phone_lean_frontback_deg,phone_lean_side_deg,phone_turn_deg,shake_ms2,light_lux\r\n"+rows.map(r=>[r.t.toFixed(1),r.clock,r.ok?1:0,r.ok?r.mm.toFixed(1):"",r.ok?r.ms:"",r.tilt===null?"":r.tilt,...(r.sn||[])].join(",")).join("\r\n")+"\r\n")},
+    {name:"camera.json", data:enc.encode(JSON.stringify(camInfo(),null,1))}, {name:"phone.json", data:enc.encode(JSON.stringify(await phoneRefresh(),null,1))},
     {name:"page_log.txt", data:enc.encode($("log").textContent.replace(/\n/g,"\r\n"))});
   lastRun=files; uploadAll("runs/"+name, files); try{ saveFile(makeZip(files), name+".zip"); }catch(e){ log("Could not save the zip: "+e.message); }
   if(s){ sets.push({...s, surface:$("surface").value+" (5-min test)", cond:$("cond").value, tape:isNaN(tape)?null:tape, off:isNaN(tape)?null:s.avg-tape}); renderSets(); }
@@ -665,8 +686,8 @@ function uploadLog(kind){
   const enc=new TextEncoder(), cs=camTrack?camTrack.getSettings():{};
   const info="Target: "+$("surface").value+"\nConditions: "+$("cond").value+"\nTape: "+($("tape").value||"not entered")+" mm\nCamera zoom: "+(cs.zoom!==undefined?cs.zoom:"n/a")+"\n\n";
   const files=[{name:"results.txt", data:enc.encode(info+($("out").value||"No sets saved yet."))},{name:"log.txt", data:enc.encode($("log").textContent)},
-    {name:"camera.json", data:enc.encode(JSON.stringify(camInfo(),null,1))},
-    {name:"readings.csv", data:enc.encode("clock,distance_mm,tilt_deg\r\n"+sessionRows.map(r=>r.join(",")).join("\r\n")+"\r\n")}, ...autoPhotos];
+    {name:"camera.json", data:enc.encode(JSON.stringify(camInfo(),null,1))}, {name:"phone.json", data:enc.encode(JSON.stringify(phoneCache,null,1))},
+    {name:"readings.csv", data:enc.encode("clock,distance_mm,x3_tilt_deg,phone_lean_frontback_deg,phone_lean_side_deg,phone_turn_deg,shake_ms2,light_lux\r\n"+sessionRows.map(r=>r.join(",")).join("\r\n")+"\r\n")}, ...autoPhotos];
   autoPhotos=[]; uploadAll(kind+"/"+stamp(), files);
 }
 $("upSave").onclick = async()=>{
@@ -692,7 +713,7 @@ function statusObj(){
   const s=stats(kept(readings)), cs=camTrack?camTrack.getSettings():{}, caps=(camTrack&&camTrack.getCapabilities)?camTrack.getCapabilities():{};
   return { app:document.querySelector("h1").textContent.trim().replace(/\s+/g," "), time:new Date().toString(), connected:!!(device&&device.gatt.connected&&cmdChar), x3:device&&device.name||null,
     camera:!!camStream, cam:{w:cs.width,h:cs.height,zoom:cs.zoom,brightness:cs.exposureCompensation,zoomRange:caps.zoom?[caps.zoom.min,caps.zoom.max]:null,brightnessRange:caps.exposureCompensation?[caps.exposureCompensation.min,caps.exposureCompensation.max]:null},
-    cameraDetails:camInfo(), testRunning:running, readings:readings.length, last:readings.length?readings[readings.length-1]:null, tiltDeg:lastTilt===null?null:lastTilt*180/Math.PI,
+    cameraDetails:camInfo(), phone:phoneCache, testRunning:running, readings:readings.length, last:readings.length?readings[readings.length-1]:null, tiltDeg:lastTilt===null?null:lastTilt*180/Math.PI,
     stats:s, tape:$("tape").value, target:$("surface").value, conditions:$("cond").value, trim:$("trim").value, savedSets:sets.length, waitingToSend:upQueue.length, screen:[innerWidth,innerHeight], visible:document.visibilityState };
 }
 async function camSet(which, v){ const el=$(which==="zoom"?"camZoom":"camExp"); if(!camTrack||!el.oninput) return "camera or slider not available"; el.value=v; await el.oninput(); return "set to "+el.value; }
