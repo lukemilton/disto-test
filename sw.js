@@ -1,6 +1,6 @@
 // Keeps a copy of the page on the phone so it opens with no phone signal.
 // Change VERSION whenever the page changes, so phones pick up the new copy.
-const VERSION = "x3-test-v5.5";
+const VERSION = "x3-test-v5.6";
 const FILES = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", e => {
@@ -19,7 +19,7 @@ self.addEventListener("activate", e => {
 self.addEventListener("fetch", e => {
   if (e.request.method !== "GET") return;
   e.respondWith(
-    fetch(e.request)
+    fetch(e.request, {cache: "no-store"})
       .then(r => { const copy = r.clone(); caches.open(VERSION).then(c => c.put(e.request, copy)); return r; })
       .catch(() => caches.match(e.request, { ignoreSearch: true }).then(r => r || caches.match("./index.html")))
   );

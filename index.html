@@ -45,13 +45,13 @@ textarea{width:100%;height:120px;font-family:Consolas,monospace;font-size:12.5px
 <body>
 <div class="wrap">
   <div>
-    <h1>DISTO X3 Test <span class="muted">version 5.5 (phone app with camera)</span></h1>
+    <h1>DISTO X3 Test <span class="muted">version 5.6 (phone app with camera)</span></h1>
     <p class="muted">Connects to the Leica DISTO over Bluetooth, records readings and works out the spread. Open this page in Google Chrome on an Android phone, or in Chrome or Edge on a computer with Bluetooth. iPhones cannot use it (use the Leica DISTO Plan app instead).</p>
   </div>
 
   <div class="card">
     <h2>1. Connect</h2>
-    <p class="muted">Turn the DISTO on and switch its Bluetooth on (in its settings menu). Close the Leica phone app if it is open, because only one thing can connect at a time.</p>
+    <p class="muted" id="connectHelp">Turn the DISTO on and switch its Bluetooth on (in its settings menu). Close the Leica phone app if it is open, because only one thing can connect at a time.</p>
     <div class="row">
       <button class="primary" id="connect">Connect to DISTO</button>
       <button id="connectAny">Show all Bluetooth devices</button>
@@ -190,6 +190,8 @@ function log(msg){ const el=$("log"); el.textContent += new Date().toLocaleTimeS
 function setConnected(on){
   for (const id of ["laser","trigger","auto","sendCustom","find"]) $(id).disabled = !on || !cmdChar;
   $("disconnect").disabled = !on;
+  for (const id of ["connect","connectAny","connectHelp"]) $(id).style.display = on ? "none" : "";
+  $("disconnect").style.display = on ? "" : "none";
   $("status").textContent = on ? "Connected to " + (device && device.name ? device.name : "device") : "Not connected";
 }
 function stats(a){
@@ -364,7 +366,7 @@ $("copyLog").onclick = async()=>{
   try{ await navigator.clipboard.writeText(t); $("logCopied").textContent="Copied. Paste it to Claude."; }
   catch(e){ $("logCopied").textContent="Could not copy. Select the text in the box and press Ctrl+C."; }
 };
-render();
+render(); setConnected(false);
 // ---- Camera: live view, photos and video from the back camera, while Bluetooth readings carry on ----
 let camStream=null, camTrack=null, rec=null, recChunks=[], recMime="", wake=null;
 const stamp = () => { const d=new Date(), p=n=>String(n).padStart(2,"0"); return d.getFullYear()+"-"+p(d.getMonth()+1)+"-"+p(d.getDate())+"_"+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds()); };
@@ -566,6 +568,11 @@ $("shareRun").onclick = async()=>{
 
 try{ const saved = JSON.parse(localStorage.getItem("x3sets")||"[]"); if (saved.length){ sets = saved; renderSets(); log("Brought back "+saved.length+" saved set(s) from last time."); } }catch(e){}
 $("clearSets").onclick = ()=>{ if($("clearSets").dataset.sure!=="1"){ $("clearSets").dataset.sure="1"; $("clearSets").textContent="Tap again to delete all saved sets"; return; } sets=[]; renderSets(); $("clearSets").dataset.sure=""; $("clearSets").textContent="Delete saved sets"; log("Saved sets deleted."); };
+if ("serviceWorker" in navigator) navigator.serviceWorker.addEventListener("controllerchange", ()=>{
+  // A newer version of the app has arrived: reload to show it, unless a test is under way.
+  let done=false; try{ done = sessionStorage.getItem("x3reloaded")==="1"; sessionStorage.setItem("x3reloaded","1"); }catch(e){ done=true; }
+  if (!done && !running && !(device && device.gatt.connected)) location.reload();
+});
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(e => log("Offline copy not saved: " + e.message));
 log(navigator.bluetooth ? "Ready. Press \"Connect to DISTO\"." : "This browser cannot use Bluetooth. Open this page in Google Chrome on an Android phone, or Chrome or Edge on a computer.");
 </script>
