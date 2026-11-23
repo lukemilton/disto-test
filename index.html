@@ -45,7 +45,7 @@ textarea{width:100%;height:120px;font-family:Consolas,monospace;font-size:12.5px
 <body>
 <div class="wrap">
   <div>
-    <h1>DISTO X3 Test <span class="muted">version 6.6 (phone app, camera, remote control)</span></h1>
+    <h1>DISTO X3 Test <span class="muted">version 6.7 (phone app, camera, remote control)</span></h1>
     <p class="muted">Connects to the Leica DISTO over Bluetooth, records readings and works out the spread. Open this page in Google Chrome on an Android phone, or in Chrome or Edge on a computer with Bluetooth. iPhones cannot use it (use the Leica DISTO Plan app instead).</p>
   </div>
 
@@ -528,11 +528,14 @@ function makeZip(files){
 // ZIP-END
 const median = a => { if(!a.length) return null; const s=[...a].sort((x,y)=>x-y), m=s.length>>1; return s.length%2 ? s[m] : (s[m-1]+s[m])/2; };
 function frameBlob(extra, maxW, q){
-  return new Promise(res=>{
-    const v=$("camView"); if(!v.videoWidth){ res(null); return; }
-    const sc = maxW && v.videoWidth>maxW ? maxW/v.videoWidth : 1;
-    const c=document.createElement("canvas"); c.width=Math.round(v.videoWidth*sc); c.height=Math.round(v.videoHeight*sc);
-    const g=c.getContext("2d"); g.drawImage(v,0,0,c.width,c.height);
+  return new Promise(async res=>{
+    // Take the frame straight from the camera where the browser allows it: a covered or background window shows a black video.
+    const v=$("camView"); let src=v, W=v.videoWidth, H=v.videoHeight;
+    try{ if(window.ImageCapture && camTrack && camTrack.readyState==="live"){ const bmp=await Promise.race([new ImageCapture(camTrack).grabFrame(), new Promise((_,rej)=>setTimeout(()=>rej(new Error("slow")),3000))]); src=bmp; W=bmp.width; H=bmp.height; } }catch(e){}
+    if(!W){ res(null); return; }
+    const sc = maxW && W>maxW ? maxW/W : 1;
+    const c=document.createElement("canvas"); c.width=Math.round(W*sc); c.height=Math.round(H*sc);
+    const g=c.getContext("2d"); g.drawImage(src,0,0,c.width,c.height);
     const fs=Math.max(18,Math.round(c.height/30));
     const txt=new Date().toLocaleTimeString()+"  X3: "+(readings.length?readings[readings.length-1].toFixed(1)+" mm":"none yet")+"  zoom "+(camTrack&&camTrack.getSettings().zoom!==undefined?(+camTrack.getSettings().zoom).toFixed(1):"n/a")+"  "+extra;
     g.fillStyle="rgba(0,0,0,.6)"; g.fillRect(0,c.height-fs*1.8,c.width,fs*1.8);
