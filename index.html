@@ -45,7 +45,7 @@ textarea{width:100%;height:120px;font-family:Consolas,monospace;font-size:12.5px
 <body>
 <div class="wrap">
   <div>
-    <h1>DISTO X3 Test <span class="muted">version 6.1 (phone app, camera, remote control)</span></h1>
+    <h1>DISTO X3 Test <span class="muted">version 6.2 (phone app, camera, remote control)</span></h1>
     <p class="muted">Connects to the Leica DISTO over Bluetooth, records readings and works out the spread. Open this page in Google Chrome on an Android phone, or in Chrome or Edge on a computer with Bluetooth. iPhones cannot use it (use the Leica DISTO Plan app instead).</p>
   </div>
 
@@ -110,6 +110,7 @@ textarea{width:100%;height:120px;font-family:Consolas,monospace;font-size:12.5px
     <div class="row" style="margin-top:6px">
       <label id="zoomWrap" style="display:none">Zoom <input type="range" id="camZoom" style="width:180px"> <span id="zoomVal"></span></label>
       <label id="expWrap" style="display:none">Brightness <input type="range" id="camExp" style="width:180px"> <span id="expVal"></span></label>
+      <label id="camPickWrap" style="display:none">Which camera <select id="camPick"></select></label>
     </div>
     <video id="camView" playsinline muted autoplay style="display:none"></video>
     <div id="camFiles" class="muted"></div>
@@ -411,16 +412,37 @@ function slider(wrapId, inputId, valId, cap, key, extra){
 $("camOn").onclick = async()=>{
   if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){ log("This browser cannot use the camera."); return; }
   try{
-    camStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"}, width:{ideal:1920}, height:{ideal:1080}}, audio:false});
+    let want=""; try{ want=localStorage.getItem("x3cam")||""; }catch(e){}
+    const size={width:{ideal:1920}, height:{ideal:1080}};
+    try{ camStream = await navigator.mediaDevices.getUserMedia({video: want ? Object.assign({deviceId:{exact:want}},size) : Object.assign({facingMode:{ideal:"environment"}},size), audio:false}); }
+    catch(e){ if(!want) throw e; log("The chosen camera would not start, using the default one."); camStream = await navigator.mediaDevices.getUserMedia({video:Object.assign({facingMode:{ideal:"environment"}},size), audio:false}); }
     camTrack = camStream.getVideoTracks()[0];
     $("camView").srcObject = camStream; camButtons(true);
     const caps = camTrack.getCapabilities ? camTrack.getCapabilities() : {};
     slider("zoomWrap","camZoom","zoomVal",caps.zoom,"zoom");
     slider("expWrap","camExp","expVal",caps.exposureCompensation,"exposureCompensation",{exposureMode:"continuous"});
     const s=camTrack.getSettings(); log("Camera on: "+(s.width||"?")+" x "+(s.height||"?")+". Zoom slider: "+(caps.zoom?"yes":"not offered by this phone")+". Brightness slider: "+(caps.exposureCompensation?"yes":"not offered by this phone")+".");
-    keepAwake();
+    keepAwake(); camList();
   }catch(e){ log("Could not start the camera: "+e.message+". Allow the camera when the phone asks."); }
 };
+// The phone has several cameras; list them so a damaged one can be avoided, and record which one is in use.
+let camNames=[];
+async function camList(){
+  try{
+    const all=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==="videoinput"), sel=$("camPick"), cur=camTrack?camTrack.getSettings().deviceId:"";
+    camNames=all.map((d,i)=>d.label||("Camera "+(i+1))); sel.innerHTML="";
+    all.forEach((d,i)=>sel.add(new Option((i+1)+": "+camNames[i], d.deviceId))); sel.value=cur;
+    $("camPickWrap").style.display = all.length>1 ? "" : "none";
+    log("Cameras on this phone: "+camNames.map((n,i)=>(i+1)+": "+n).join(" | ")+". In use: "+(camTrack?camTrack.label:"none")+".");
+  }catch(e){}
+}
+async function camSwitch(id){ try{ localStorage.setItem("x3cam",id); }catch(e){} camStop(); await $("camOn").onclick(); }
+$("camPick").onchange = ()=>camSwitch($("camPick").value);
+function camInfo(){
+  if(!camTrack) return {camera:"off"};
+  let caps={}; try{ caps=camTrack.getCapabilities?camTrack.getCapabilities():{}; }catch(e){}
+  return {inUse:camTrack.label, allCameras:camNames, settings:camTrack.getSettings(), capabilities:caps, picture:[$("camView").videoWidth,$("camView").videoHeight]};
+}
 function camStop(){
   if(rec && rec.state!=="inactive") rec.stop();
   if(camStream) camStream.getTracks().forEach(t=>t.stop());
@@ -487,7 +509,7 @@ function frameBlob(extra){
     const c=document.createElement("canvas"); c.width=v.videoWidth; c.height=v.videoHeight;
     const g=c.getContext("2d"); g.drawImage(v,0,0);
     const fs=Math.max(18,Math.round(c.height/30));
-    const txt=new Date().toLocaleTimeString()+"  X3: "+(readings.length?readings[readings.length-1].toFixed(1)+" mm":"none yet")+"  "+extra;
+    const txt=new Date().toLocaleTimeString()+"  X3: "+(readings.length?readings[readings.length-1].toFixed(1)+" mm":"none yet")+"  zoom "+(camTrack&&camTrack.getSettings().zoom!==undefined?(+camTrack.getSettings().zoom).toFixed(1):"n/a")+"  "+extra;
     g.fillStyle="rgba(0,0,0,.6)"; g.fillRect(0,c.height-fs*1.8,c.width,fs*1.8);
     g.fillStyle="#fff"; g.font=fs+"px sans-serif"; g.textBaseline="middle"; g.fillText(txt,fs*0.5,c.height-fs*0.9,c.width-fs);
     c.toBlob(b=>res(b),"image/jpeg",0.9);
@@ -573,6 +595,7 @@ $("runTest").onclick = async()=>{
   const enc=new TextEncoder();
   files.unshift({name:"summary.txt", data:enc.encode(lines.join("\r\n")+"\r\n")},
     {name:"readings.csv", data:enc.encode("seconds,clock,got_reading,distance_mm,ms_to_reading,tilt_raw\r\n"+rows.map(r=>[r.t.toFixed(1),r.clock,r.ok?1:0,r.ok?r.mm.toFixed(1):"",r.ok?r.ms:"",r.tilt===null?"":r.tilt].join(",")).join("\r\n")+"\r\n")},
+    {name:"camera.json", data:enc.encode(JSON.stringify(camInfo(),null,1))},
     {name:"page_log.txt", data:enc.encode($("log").textContent.replace(/\n/g,"\r\n"))});
   lastRun=files; uploadAll("runs/"+name, files); try{ saveFile(makeZip(files), name+".zip"); }catch(e){ log("Could not save the zip: "+e.message); }
   if(s){ sets.push({...s, surface:$("surface").value+" (5-min test)", cond:$("cond").value, tape:isNaN(tape)?null:tape, off:isNaN(tape)?null:s.avg-tape}); renderSets(); }
@@ -642,6 +665,7 @@ function uploadLog(kind){
   const enc=new TextEncoder(), cs=camTrack?camTrack.getSettings():{};
   const info="Target: "+$("surface").value+"\nConditions: "+$("cond").value+"\nTape: "+($("tape").value||"not entered")+" mm\nCamera zoom: "+(cs.zoom!==undefined?cs.zoom:"n/a")+"\n\n";
   const files=[{name:"results.txt", data:enc.encode(info+($("out").value||"No sets saved yet."))},{name:"log.txt", data:enc.encode($("log").textContent)},
+    {name:"camera.json", data:enc.encode(JSON.stringify(camInfo(),null,1))},
     {name:"readings.csv", data:enc.encode("clock,distance_mm,tilt_deg\r\n"+sessionRows.map(r=>r.join(",")).join("\r\n")+"\r\n")}, ...autoPhotos];
   autoPhotos=[]; uploadAll(kind+"/"+stamp(), files);
 }
@@ -668,7 +692,7 @@ function statusObj(){
   const s=stats(kept(readings)), cs=camTrack?camTrack.getSettings():{}, caps=(camTrack&&camTrack.getCapabilities)?camTrack.getCapabilities():{};
   return { app:document.querySelector("h1").textContent.trim().replace(/\s+/g," "), time:new Date().toString(), connected:!!(device&&device.gatt.connected&&cmdChar), x3:device&&device.name||null,
     camera:!!camStream, cam:{w:cs.width,h:cs.height,zoom:cs.zoom,brightness:cs.exposureCompensation,zoomRange:caps.zoom?[caps.zoom.min,caps.zoom.max]:null,brightnessRange:caps.exposureCompensation?[caps.exposureCompensation.min,caps.exposureCompensation.max]:null},
-    testRunning:running, readings:readings.length, last:readings.length?readings[readings.length-1]:null, tiltDeg:lastTilt===null?null:lastTilt*180/Math.PI,
+    cameraDetails:camInfo(), testRunning:running, readings:readings.length, last:readings.length?readings[readings.length-1]:null, tiltDeg:lastTilt===null?null:lastTilt*180/Math.PI,
     stats:s, tape:$("tape").value, target:$("surface").value, conditions:$("cond").value, trim:$("trim").value, savedSets:sets.length, waitingToSend:upQueue.length, screen:[innerWidth,innerHeight], visible:document.visibilityState };
 }
 async function camSet(which, v){ const el=$(which==="zoom"?"camZoom":"camExp"); if(!camTrack||!el.oninput) return "camera or slider not available"; el.value=v; await el.oninput(); return "set to "+el.value; }
@@ -685,7 +709,8 @@ async function remoteDo(c, files, tag){
       if(c.trim!==undefined) $("trim").value=c.trim;
       render();
       { const out=[]; if(c.zoom!==undefined) out.push("zoom "+await camSet("zoom",c.zoom)); if(c.brightness!==undefined) out.push("brightness "+await camSet("exp",c.brightness)); return "set "+out.join(", "); }
-    case "camera": if(c.on===false){ camStop(); return "camera off"; } if(!camStream) await $("camOn").onclick(); await sleep(1200); return camStream?"camera on":"camera did not start";
+    case "camera": if(c.on===false){ camStop(); return "camera off"; }
+      if(c.pick!==undefined){ if(!camStream){ await $("camOn").onclick(); await sleep(1200); } const o=[...$("camPick").options][(+c.pick)-1]; if(!o) return "no camera number "+c.pick+" (have "+$("camPick").options.length+")"; await camSwitch(o.value); await sleep(1500); return "now using "+(camTrack?camTrack.label:"nothing"); } if(!camStream) await $("camOn").onclick(); await sleep(1200); return camStream?"camera on":"camera did not start";
     case "photo": {
       if(!camStream){ await $("camOn").onclick(); await sleep(1500); }
       if(!camStream) return "no camera";
