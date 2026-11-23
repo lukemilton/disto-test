@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DISTO X3 Test v5</title>
+<style>
+:root{--bg:#eef0ec;--panel:#fbfcfa;--ink:#18232b;--muted:#5b6871;--line:#cfd5d0;--accent:#0f5fa8;--good:#2c8a4b;--warn:#c98a12;--bad:#c23b2e}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Segoe UI",Helvetica,Arial,sans-serif;font-size:15px;line-height:1.45}
+.wrap{max-width:980px;margin:0 auto;padding:18px 16px 40px;display:flex;flex-direction:column;gap:14px}
+h1{font-size:26px;margin:0}
+h2{font-size:17px;margin:0 0 8px}
+p{margin:4px 0}
+.muted{color:var(--muted);font-size:13.5px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:14px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button{font:inherit;padding:8px 12px;border-radius:5px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button:disabled{opacity:.45;cursor:not-allowed}
+input,select{font:inherit;padding:7px 8px;border:1px solid var(--line);border-radius:5px;background:#fff;color:var(--ink)}
+input[type=number]{width:110px}
+.status{font-weight:600}
+.big{font-size:44px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.1}
+.stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-top:8px}
+.stat{border:1px solid var(--line);border-left:5px solid var(--line);border-radius:5px;padding:6px 9px}
+.stat .k{font-size:12px;color:var(--muted)}
+.stat .v{font-size:20px;font-weight:600;font-variant-numeric:tabular-nums}
+.stat.good{border-left-color:var(--good)}.stat.warn{border-left-color:var(--warn)}.stat.bad{border-left-color:var(--bad)}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+th,td{border-bottom:1px solid var(--line);padding:5px 8px;text-align:right;font-variant-numeric:tabular-nums}
+th:first-child,td:first-child,th:nth-child(2),td:nth-child(2){text-align:left}
+.tablewrap{overflow-x:auto}
+#log{background:#10181d;color:#cfe3ee;font-family:Consolas,monospace;font-size:12.5px;padding:10px;border-radius:5px;height:320px;overflow:auto;white-space:pre-wrap}
+textarea{width:100%;height:120px;font-family:Consolas,monospace;font-size:12.5px}
+@media (max-width:700px){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <h1>DISTO X3 Test <span class="muted">version 5.1 (phone)</span></h1>
+    <p class="muted">Connects to the Leica DISTO over Bluetooth, records readings and works out the spread. Open this page in Google Chrome on an Android phone, or in Chrome or Edge on a computer with Bluetooth. iPhones cannot use it (use the Leica DISTO Plan app instead).</p>
+  </div>
+
+  <div class="card">
+    <h2>1. Connect</h2>
+    <p class="muted">Turn the DISTO on and switch its Bluetooth on (in its settings menu). Close the Leica phone app if it is open, because only one thing can connect at a time.</p>
+    <div class="row">
+      <button class="primary" id="connect">Connect to DISTO</button>
+      <button id="connectAny">Show all Bluetooth devices</button>
+      <button id="disconnect" disabled>Disconnect</button>
+      <span class="status" id="status">Not connected</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>2. Take readings</h2>
+    <div class="row">
+      <button id="laser" disabled>Laser on</button>
+      <button id="trigger" disabled>Take one reading</button>
+      <button class="primary" id="auto" disabled>Take 30 readings</button>
+      <button id="stop" disabled>Stop</button>
+      <button id="clear">Clear readings</button>
+    </div>
+    <p class="muted">If the buttons here do nothing, press the red button on the DISTO itself. Readings taken that way are still recorded here.</p>
+    <div class="row" style="margin-top:6px">
+      <label>Distance channel <select id="distSel"><option value="auto">Automatic</option></select></label>
+      <label>Command channel <select id="cmdSel"><option value="">None found yet</option></select></label>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <label>Try a command <input id="custom" style="width:140px" placeholder="e.g. g"></label>
+      <label>Ending <select id="ending"><option value="">none</option><option value="crlf">Enter (CR+LF)</option><option value="lf">LF</option><option value="cr">CR</option></select></label>
+      <button id="sendCustom" disabled>Send command</button>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <button class="primary" id="find" disabled>Find the trigger command (about 1 minute)</button>
+      <span class="muted" id="findMsg">Tries the Leica X3 command first, then a few others, and stops at the first one that makes the DISTO measure.</span>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <label>Ignore the first and last <input type="number" id="trim" value="5" min="0" max="50" step="1" style="width:70px"> readings of each set</label>
+      <span class="muted">These are the ones taken while the button is being pressed.</span>
+    </div>
+    <div class="big" id="last">–</div>
+    <div class="stats">
+      <div class="stat"><div class="k">Readings</div><div class="v" id="s-n">0</div></div>
+      <div class="stat"><div class="k">Average</div><div class="v" id="s-avg">–</div></div>
+      <div class="stat" id="box-spread"><div class="k">Spread (highest minus lowest)</div><div class="v" id="s-spread">–</div></div>
+      <div class="stat"><div class="k">Typical scatter</div><div class="v" id="s-sd">–</div></div>
+      <div class="stat" id="box-off"><div class="k">Average minus tape</div><div class="v" id="s-off">–</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>3. Save this set</h2>
+    <div class="row">
+      <label>Tape distance (mm) <input type="number" id="tape" step="1" placeholder="e.g. 10000"></label>
+      <label>Target
+        <select id="surface">
+          <option>Plate, matte white</option>
+          <option>Plate, reflective tape</option>
+          <option>Round post, matte white</option>
+          <option>Round post, reflective tape</option>
+          <option>Other</option>
+        </select>
+      </label>
+      <label>Conditions
+        <select id="cond">
+          <option>Full sun, midday</option>
+          <option>Full sun, morning</option>
+          <option>Shade</option>
+          <option>Indoors</option>
+        </select>
+      </label>
+      <button class="primary" id="save">Save set to the table</button>
+    </div>
+    <p class="muted">Measure the tape distance from the same point on the DISTO that it measures from. By default that is its back end.</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Target</th><th>Conditions</th><th>Tape mm</th><th>Readings</th><th>Average mm</th><th>Spread mm</th><th>Scatter mm</th><th>Avg − tape mm</th></tr></thead>
+        <tbody id="sets"></tbody>
+      </table>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="copy">Copy results for Claude</button>
+      <span class="muted" id="copied"></span>
+    </div>
+    <textarea id="out" readonly placeholder="Saved results appear here. Copy this and paste it to Claude."></textarea>
+  </div>
+
+  <div class="card">
+    <h2>What the page is doing</h2>
+    <div class="row" style="margin-bottom:8px"><button id="copyLog">Copy this log for Claude</button><span class="muted" id="logCopied"></span></div>
+    <div id="log"></div>
+  </div>
+</div>
+
+<script>
+// Leica DISTO Bluetooth numbers, taken from open projects that read older DISTO models
+// (D1, D2, D110). Not yet confirmed on the X3: this page is the test.
+const SVC  = "3ab10100-f831-4395-b29d-570977d5bf94";  // DISTO service
+const DIST = "3ab10101-f831-4395-b29d-570977d5bf94";  // distance, a number in metres
+const CMD  = "3ab10109-f831-4395-b29d-570977d5bf94";  // commands on older models: "o" laser on, "p" laser off, "g" measure
+const BASIC = "3ab1010d-f831-4395-b29d-570977d5bf94"; // X3/X4: measurement message, distance is the first number
+const CMD_X = "3ab10120-f831-4395-b29d-570977d5bf94"; // X3/X4: command channel
+
+const $ = id => document.getElementById(id);
+let trigCmd = "g", finding = false, lastReadingAt = 0, lastOtherAt = 0;
+let device = null, cmdChar = null, chars = [], distAuto = null, readings = [], sets = [], autoTimer = null, autoLeft = 0, laserOn = false;
+
+function log(msg){ const el=$("log"); el.textContent += new Date().toLocaleTimeString()+"  "+msg+"\n"; el.scrollTop = el.scrollHeight; }
+function setConnected(on){
+  for (const id of ["laser","trigger","auto","sendCustom","find"]) $(id).disabled = !on || !cmdChar;
+  $("disconnect").disabled = !on;
+  $("status").textContent = on ? "Connected to " + (device && device.name ? device.name : "device") : "Not connected";
+}
+function stats(a){
+  const n=a.length; if(!n) return null;
+  const avg=a.reduce((s,v)=>s+v,0)/n, min=Math.min(...a), max=Math.max(...a);
+  const sd=n>1?Math.sqrt(a.reduce((s,v)=>s+(v-avg)*(v-avg),0)/(n-1)):0;
+  return {n,avg,min,max,spread:max-min,sd};
+}
+// Drop the first and last few readings, which are taken while the DISTO is being touched.
+function kept(a){ const n=Math.max(0,parseInt($("trim").value)||0); return a.length>=2*n+3 ? a.slice(n,a.length-n) : a; }
+function render(){
+  const use=kept(readings), s=stats(use), tape=parseFloat($("tape").value);
+  $("s-n").textContent = readings.length + (use.length!==readings.length ? " (using "+use.length+")" : "");
+  $("last").textContent = readings.length ? readings[readings.length-1].toFixed(1)+" mm" : "–";
+  $("s-avg").textContent = s ? s.avg.toFixed(1)+" mm" : "–";
+  $("s-spread").textContent = s ? s.spread.toFixed(1)+" mm" : "–";
+  $("s-sd").textContent = s ? "±"+s.sd.toFixed(2)+" mm" : "–";
+  $("box-spread").className = "stat" + (s && s.n>=5 ? (s.spread<=2?" good":s.spread<=4?" warn":" bad") : "");
+  const off = s && !isNaN(tape) ? s.avg-tape : null;
+  $("s-off").textContent = off===null ? "–" : (off>=0?"+":"")+off.toFixed(1)+" mm";
+  $("box-off").className = "stat" + (off===null ? "" : (Math.abs(off)<=1.5?" good":Math.abs(off)<=3?" warn":" bad"));
+}
+const short = u => u.slice(0,8);
+function hex(dv){ let o=[]; for(let i=0;i<dv.byteLength;i++) o.push(dv.getUint8(i).toString(16).padStart(2,"0")); return o.join(" "); }
+function ascii(dv){ let o=""; for(let i=0;i<dv.byteLength;i++){ const c=dv.getUint8(i); o += (c>=32&&c<127)?String.fromCharCode(c):"."; } return o; }
+function record(mm){
+  lastReadingAt = Date.now();
+  readings.push(mm); log("Reading "+readings.length+": "+mm.toFixed(1)+" mm"); render();
+  if (autoLeft>0){ autoLeft--; if(autoLeft===0) stopAuto("30 readings done."); }
+}
+// Every channel that can send is listened to, and everything it sends is written to the log.
+function onAny(ev){
+  const c = ev.target, dv = c.value, u = c.uuid;
+  let extra = "";
+  let f32 = null;
+  if (dv.byteLength >= 4){ f32 = dv.getFloat32(0,true); extra += "  as number: "+(isFinite(f32)?f32.toPrecision(7):"n/a"); }
+  if (dv.byteLength >= 8){ const f64 = dv.getFloat64(0,true); if(isFinite(f64) && Math.abs(f64)<1e6 && Math.abs(f64)>1e-6) extra += "  as long number: "+f64.toPrecision(9); }
+  log("   from "+short(u)+" ("+dv.byteLength+" bytes): "+hex(dv)+extra+"  text: "+ascii(dv));
+  const plausible = f32!==null && isFinite(f32) && f32>0.03 && f32<300;
+  const sel = $("distSel").value;
+  if (u!==BASIC && u!==DIST) lastOtherAt = Date.now();
+  if (sel==="auto"){
+    if (u===DIST || u===BASIC) distAuto = u;
+    else if (!distAuto && plausible && dv.byteLength===4){ distAuto = u; log("Using channel "+short(u)+" as the distance. Change it in \"Distance channel\" if that is wrong."); }
+  }
+  const active = sel==="auto" ? distAuto : sel;
+  if (active===u && plausible) record(f32*1000);
+}
+async function connect(any){
+  if (!navigator.bluetooth){ log("This browser cannot use Bluetooth. Use Google Chrome on an Android phone, or Chrome or Edge on a computer. On a phone, check Bluetooth and Location are both switched on."); return; }
+  try{
+    const opts = any ? {acceptAllDevices:true, optionalServices:[SVC,"battery_service","device_information"]}
+                     : {filters:[{namePrefix:"DISTO"},{services:[SVC]}], optionalServices:[SVC,"battery_service","device_information"]};
+    log("Looking for the DISTO. Pick it in the box that pops up.");
+    device = await navigator.bluetooth.requestDevice(opts);
+    device.addEventListener("gattserverdisconnected", ()=>{ log("Disconnected."); cmdChar=null; stopAuto(); setConnected(false); });
+    log("Connecting to "+(device.name||"unnamed device")+" ...");
+    const server = await device.gatt.connect();
+    let svc;
+    try { svc = await server.getPrimaryService(SVC); }
+    catch(e){ log("Connected, but this device does not offer the DISTO service this page expects. Tell Claude: \"DISTO service not found\". ("+e.message+")"); setConnected(true); return; }
+    chars = await svc.getCharacteristics(); distAuto = null;
+    log("DISTO service found with "+chars.length+" channels:");
+    const dSel=$("distSel"), cSel=$("cmdSel"); dSel.innerHTML='<option value="auto">Automatic</option>'; cSel.innerHTML="";
+    for (const c of chars){
+      const p=c.properties, what=[p.read&&"read",p.write&&"write",p.writeWithoutResponse&&"write-quick",p.notify&&"notify",p.indicate&&"indicate"].filter(Boolean).join(", ");
+      log("   "+short(c.uuid)+"  "+what);
+      if (p.notify||p.indicate) dSel.add(new Option(short(c.uuid), c.uuid));
+      if (p.write||p.writeWithoutResponse) cSel.add(new Option(short(c.uuid), c.uuid));
+    }
+    let listening=0;
+    for (const c of chars){
+      if (!(c.properties.notify||c.properties.indicate)) continue;
+      try{ await c.startNotifications(); c.addEventListener("characteristicvaluechanged", onAny); listening++; }
+      catch(e){ log("   could not listen to "+short(c.uuid)+": "+e.message); }
+    }
+    log("Listening on "+listening+" channels. Now press the red button on the DISTO and watch what arrives.");
+    const pickCmd = () => { cmdChar = chars.find(c=>c.uuid===cSel.value) || null; };
+    if (chars.some(c=>c.uuid===CMD)) cSel.value = CMD;
+    else if (chars.some(c=>c.uuid===CMD_X)) cSel.value = CMD_X;
+    pickCmd(); cSel.onchange = pickCmd;
+    log(cmdChar ? "Command channel: "+short(cmdChar.uuid)+". Press \"Take one reading\" to see if the DISTO obeys."
+                : "No channel that accepts commands was found, so this page cannot trigger readings.");
+    setConnected(true);
+  }catch(e){ log("Could not connect: "+e.message); setConnected(false); }
+}
+const show = t => JSON.stringify(t);
+const sleep = ms => new Promise(r=>setTimeout(r,ms));
+const X_TRIG = "raiseEvent 10\r\n";               // Leica "Distocom" command used by the X3/X4
+const isX = () => !!cmdChar && cmdChar.uuid===CMD_X;
+const tc = () => (isX() && trigCmd==="g") ? X_TRIG : trigCmd;   // the command used to take a reading
+async function send(ch){
+  if(!cmdChar) return false;
+  try{
+    const data = new TextEncoder().encode(ch);
+    if (cmdChar.properties.write) await cmdChar.writeValueWithResponse(data);
+    else await cmdChar.writeValueWithoutResponse(data);
+    return true;
+  }catch(e){ log("Command \""+ch+"\" was refused: "+e.message); return false; }
+}
+function stopAuto(msg){ if(autoTimer){clearInterval(autoTimer);autoTimer=null} autoLeft=0; $("stop").disabled=true; if(msg) log(msg); }
+
+$("connect").onclick = ()=>connect(false);
+$("connectAny").onclick = ()=>connect(true);
+$("disconnect").onclick = ()=>{ if(device&&device.gatt.connected) device.gatt.disconnect(); };
+$("laser").onclick = async()=>{ const ok=await send(isX()?X_TRIG:(laserOn?"p":"o")); if(ok){ laserOn=!laserOn; $("laser").textContent=laserOn?"Laser off":"Laser on"; log("Sent laser "+(laserOn?"on":"off")+"."); } };
+async function shoot(){
+  // X3/X4: "raiseEvent 10" acts like the red button: first press switches the laser on, the next one measures.
+  const before=readings.length;
+  if(!(await send(tc()))) return false;
+  await sleep(1500);
+  if(readings.length===before && isX()){ await send(tc()); await sleep(2500); }
+  else if(readings.length===before) await sleep(2500);
+  return readings.length>before;
+}
+$("trigger").onclick = async()=>{ log("Sent a measure command ("+show(tc())+")."); const ok=await shoot(); log(ok?"A reading came back. Remote triggering works.":"No reading came back. If the DISTO is not paired with this computer, pair it in Windows Bluetooth settings and try again."); };
+$("auto").onclick = ()=>{
+  if(autoTimer) return; autoLeft=30; $("stop").disabled=false; log("Taking 30 readings, one every 2 seconds. Keep the DISTO still.");
+  let sent=0, busy=false; const tick=async()=>{ if(busy) return; if(sent>=30||autoLeft<=0){ clearInterval(autoTimer); autoTimer=null; return; } busy=true; sent++; await shoot(); busy=false; };
+  tick(); autoTimer=setInterval(tick,2500);
+  setTimeout(()=>{ if(autoLeft>0 && autoTimer===null) stopAuto("Stopped: only "+(30-autoLeft)+" of 30 readings came back."); },150000);
+};
+$("stop").onclick = ()=>stopAuto("Stopped.");
+$("clear").onclick = ()=>{ readings=[]; render(); log("Readings cleared."); };
+$("tape").oninput = render;
+$("trim").oninput = render;
+function renderSets(){
+  $("sets").innerHTML = sets.map(s=>"<tr><td>"+s.surface+"</td><td>"+s.cond+"</td><td>"+(s.tape??"")+"</td><td>"+s.n+"</td><td>"+s.avg.toFixed(1)+"</td><td>"+s.spread.toFixed(1)+"</td><td>"+s.sd.toFixed(2)+"</td><td>"+(s.off===null?"":(s.off>=0?"+":"")+s.off.toFixed(1))+"</td></tr>").join("");
+  $("out").value = sets.length ? "DISTO X3 test results\n"+sets.map(s=>[s.surface,s.cond,"tape "+(s.tape??"not entered")+" mm","n="+s.n,"avg "+s.avg.toFixed(1),"spread "+s.spread.toFixed(1),"scatter "+s.sd.toFixed(2),"avg-tape "+(s.off===null?"n/a":s.off.toFixed(1)),"min "+s.min.toFixed(1),"max "+s.max.toFixed(1)].join(" | ")).join("\n")+"\nRemote trigger channel found: "+(cmdChar?"yes":"no / not connected") : "";
+}
+$("save").onclick = ()=>{
+  const s=stats(kept(readings)); if(!s){ log("No readings to save yet."); return; }
+  if (isNaN(parseFloat($("tape").value))) log("Saved without a tape distance, so this set shows steadiness only.");
+  const tape=parseFloat($("tape").value);
+  sets.push({...s, surface:$("surface").value, cond:$("cond").value, tape:isNaN(tape)?null:tape, off:isNaN(tape)?null:s.avg-tape});
+  renderSets(); readings=[]; render(); log("Set saved. Readings cleared for the next set.");
+};
+$("copy").onclick = async()=>{
+  const t=$("out"); if(!t.value){ $("copied").textContent="Nothing saved yet."; return; }
+  try{ await navigator.clipboard.writeText(t.value); $("copied").textContent="Copied. Paste it to Claude."; }
+  catch(e){ t.select(); $("copied").textContent="Select the text below and copy it with Ctrl+C."; }
+};
+
+$("find").onclick = async()=>{
+  if (finding) return; finding = true; $("find").disabled = true;
+  const tries = ["getSoftwareVersion app\r\n","raiseEvent 10\r\n","raiseEvent 10\r\n","raiseEvent 10\r","raiseEvent 10","t","h","gi","k"];
+  log("Looking for the trigger command. Leave the DISTO pointing at the wall and do not press anything.");
+  let found = null, n = 0;
+  for (const t of tries){
+    if (!cmdChar || !device || !device.gatt.connected){ log("Stopped: the DISTO disconnected."); break; }
+    n++; $("findMsg").textContent = "Trying "+n+" of "+tries.length+": "+show(t);
+    const t0 = Date.now(); lastOtherAt = 0;
+    const ok = await send(t);
+    await sleep(3500);
+    const gotReading = lastReadingAt >= t0, gotReply = lastOtherAt >= t0;
+    log("Tried "+show(t)+": "+(!ok?"refused":gotReading?"A READING CAME BACK":gotReply?"the DISTO replied, but no reading":"nothing"));
+    if (gotReading){ found = t; break; }
+  }
+  if (found){ trigCmd = found; log("Trigger command found: "+show(found)+". \"Take one reading\" and \"Take 30 readings\" now use it."); $("findMsg").textContent = "Found: "+show(found)+". Now try Take 30 readings."; }
+  else { log("None of the "+n+" commands tried made the DISTO measure."); $("findMsg").textContent = "No trigger command found. Copy the log for Claude."; }
+  finding = false; $("find").disabled = !cmdChar;
+};
+$("sendCustom").onclick = async()=>{
+  const t=$("custom").value; if(!t){ log("Type a command first."); return; }
+  const e=$("ending").value, tail = e==="crlf"?"\r\n":e==="lf"?"\n":e==="cr"?"\r":"";
+  if (await send(t+tail)) log("Sent \""+t+"\""+(e?" + "+e:"")+" to "+short(cmdChar.uuid)+".");
+};
+$("copyLog").onclick = async()=>{
+  const t=$("log").textContent;
+  try{ await navigator.clipboard.writeText(t); $("logCopied").textContent="Copied. Paste it to Claude."; }
+  catch(e){ $("logCopied").textContent="Could not copy. Select the text in the box and press Ctrl+C."; }
+};
+render();
+log(navigator.bluetooth ? "Ready. Press \"Connect to DISTO\"." : "This browser cannot use Bluetooth. Open this page in Google Chrome on an Android phone, or Chrome or Edge on a computer.");
+</script>
+</body>
+</html>
